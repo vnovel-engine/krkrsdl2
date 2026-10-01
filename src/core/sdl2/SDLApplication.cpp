@@ -3216,7 +3216,7 @@ void *operator new(std::size_t size) noexcept
 	if (!size)
 		size = 1;
 	void *p;
-	while ((p = ::malloc(size)) == nullptr)
+	while (!(p = ::malloc(size)))
 	{
 		// If malloc fails, try to free up memory.
 		if (has_gced)

@@ -19,11 +19,7 @@ int tTVPScreen::GetWidth() {
 	return ::GetSystemMetrics(SM_CXSCREEN);
 #endif
 	SDL_Rect r;
-	if (SDL_GetDisplayUsableBounds(0, &r) != 0)
-	{
-		return 0;
-	}
-	return r.w;
+	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.w;
 }
 int tTVPScreen::GetHeight() {
 #if 0
@@ -35,11 +31,7 @@ int tTVPScreen::GetHeight() {
 	return ::GetSystemMetrics(SM_CYSCREEN);
 #endif
 	SDL_Rect r;
-	if (SDL_GetDisplayUsableBounds(0, &r) != 0)
-	{
-		return 0;
-	}
-	return r.h;
+	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.h;
 }
 
 #if 0
@@ -65,11 +57,7 @@ int tTVPScreen::GetDesktopLeft() {
 	return r.left;
 #endif
 	SDL_Rect r;
-	if (SDL_GetDisplayUsableBounds(0, &r) != 0)
-	{
-		return 0;
-	}
-	return r.x;
+	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.x;
 }
 int tTVPScreen::GetDesktopTop() {
 #if 0
@@ -78,11 +66,7 @@ int tTVPScreen::GetDesktopTop() {
 	return r.top;
 #endif
 	SDL_Rect r;
-	if (SDL_GetDisplayUsableBounds(0, &r) != 0)
-	{
-		return 0;
-	}
-	return r.y;
+	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.y;
 }
 int tTVPScreen::GetDesktopWidth() {
 #if 0

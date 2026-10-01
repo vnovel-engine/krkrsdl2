@@ -40,7 +40,7 @@ void TVPClipboardSetText(const ttstr & text)
 bool TVPClipboardGetText(ttstr & text)
 {
 	char* src_text = SDL_GetClipboardText();
-	if (src_text == nullptr)
+	if (!src_text)
 	{
 		return false;
 	}

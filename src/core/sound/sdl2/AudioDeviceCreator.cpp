@@ -52,12 +52,12 @@ iTVPAudioDevice* TVPCreateAudioDevice()
 
 	TVPInitAudioDeviceOptions();
 #ifdef TVP_FAUDIO_IMPLEMENT
-	if ((device == nullptr) && (TVPAudioDeviceChoice == adcFAudio || TVPAudioDeviceChoice == adcAuto))
+	if (!device && (TVPAudioDeviceChoice == adcFAudio || TVPAudioDeviceChoice == adcAuto))
 	{
 		device = TVPCreateAudioDevice_FAudio();
 	}
 #endif
-	if ((device == nullptr) && (TVPAudioDeviceChoice == adcNull || TVPAudioDeviceChoice == adcAuto))
+	if (!device && (TVPAudioDeviceChoice == adcNull || TVPAudioDeviceChoice == adcAuto))
 	{
 		device = TVPCreateAudioDevice_Null();
 	}

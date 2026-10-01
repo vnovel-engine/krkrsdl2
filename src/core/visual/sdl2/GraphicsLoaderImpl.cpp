@@ -434,7 +434,7 @@ bool TVPLoadEmscriptenPreloadedData(void* formatdata, void *callbackdata, tTVPGr
 	int w, h;
 	char *data;
 	data = emscripten_get_preloaded_image_data(filename.c_str(), &w, &h);
-	if (data != NULL)
+	if (data)
 	{
 		int size_pixel = (glmNormal != mode) ? sizeof(tjs_uint8) : sizeof(tjs_uint32);
 		// emscripten_get_preloaded_image_data result should always be 32 bit
@@ -443,7 +443,7 @@ bool TVPLoadEmscriptenPreloadedData(void* formatdata, void *callbackdata, tTVPGr
 		for (int y = 0; y < h; y += 1)
 		{
 			void *scanline = scanlinecallback(callbackdata, y);
-			if (NULL == scanline)
+			if (!scanline)
 			{
 				break;
 			}

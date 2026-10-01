@@ -10,13 +10,13 @@ static jobject javaAssetManagerRef = 0;
 
 bool AndroidAssetManager_Create_AssetManager(void)
 {
-	if (asset_manager != NULL)
+	if (asset_manager)
 	{
 		return true;
 	}
 
 	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
-	if (env == NULL)
+	if (!env)
 	{
 		return false;
 	}
@@ -36,19 +36,18 @@ bool AndroidAssetManager_Create_AssetManager(void)
 	javaAssetManagerRef = (*env)->NewGlobalRef(env, javaAssetManager);
 	asset_manager = AAssetManager_fromJava(env, javaAssetManagerRef);
 
-	if (asset_manager == NULL)
+	if (!asset_manager)
 	{
 		(*env)->DeleteGlobalRef(env, javaAssetManagerRef);
-		return false;
 	}
-	return true;
+	return !!asset_manager;
 }
 
 void AndroidAssetManager_Destroy_AssetManager(void)
 {
 	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
 
-	if (env != NULL && asset_manager != NULL)
+	if (env && asset_manager)
 	{
 		(*env)->DeleteGlobalRef(env, javaAssetManagerRef);
 		asset_manager = NULL;
@@ -64,9 +63,9 @@ AAssetManager *AndroidAssetManager_Get_AssetManager(void)
 bool AndroidAssetManager_Check_Directory_Existent(AAssetManager *asset_manager, const char *path)
 {
 	AAssetDir * asset_dir = AAssetManager_openDir(asset_manager, path);
-	if (asset_dir != NULL)
+	if (asset_dir)
 	{
-		bool r = AAssetDir_getNextFileName(asset_dir) != NULL;
+		bool r = !!AAssetDir_getNextFileName(asset_dir);
 		AAssetDir_close(asset_dir);
 		return r;
 	}

@@ -81,7 +81,7 @@ public:
 
 	virtual ~NullAudioStream() override
 	{
-		if (Owner != nullptr)
+		if (Owner)
 		{
 			Owner->DelStream(this);
 			Owner = nullptr;

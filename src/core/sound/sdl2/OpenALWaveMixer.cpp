@@ -330,7 +330,7 @@ public:
 		alGetSourcei(_alSource, AL_BYTE_OFFSET, &offset);
 		alGetSourcei(_alSource, AL_BUFFERS_QUEUED, &queued);
 		int remainBuffers = queued;
-		if (remainBuffers == 0)
+		if (!remainBuffers)
 		{
 			return 0;
 		}

@@ -52,7 +52,7 @@ void tTVPOpenGLScreen::GetDrawableSize(EGLint &w, EGLint &h) const {
 bool tTVPOpenGLScreen::CheckGLErrorAndLog(const tjs_char* funcname) {
 	GLenum error_code = glGetError();
 	if( error_code == GL_NO_ERROR ) return true;
-	if( funcname != nullptr ) {
+	if( funcname ) {
 		TVPAddLog( ttstr(funcname) );
 	}
 	switch( error_code ) {

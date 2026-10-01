@@ -62,7 +62,7 @@ public:
 
 		uint32_t flags = 0;
 		uint32_t hr = FAudioCreate(&FAudioObj, flags, FAUDIO_DEFAULT_PROCESSOR);
-		if (hr != 0)
+		if (hr)
 		{
 			TVPThrowExceptionMessage(TJS_W("Failed to call FAudioCreate"));
 		}
@@ -75,7 +75,7 @@ public:
 			0,
 			nullptr
 		);
-		if (hr != 0)
+		if (hr)
 		{
 			TVPThrowExceptionMessage(TJS_W("Failed to call FAudio_CreateMasteringVoice"));
 		}
@@ -88,18 +88,18 @@ public:
 
 	virtual void Uninitialize() override
 	{
-		while (Children.size() != 0)
+		while (Children.size())
 		{
 			auto i = Children.begin();
 			delete *i;
 		}
 
-		if (MasteringVoiceObj != nullptr)
+		if (MasteringVoiceObj)
 		{
 			FAudioVoice_DestroyVoice(MasteringVoiceObj);
 			MasteringVoiceObj = nullptr;
 		}
-		if (FAudioObj != nullptr)
+		if (FAudioObj)
 		{
 			FAudio_Release(FAudioObj);
 			FAudioObj = nullptr;
@@ -114,7 +114,7 @@ public:
 		{
 			return;
 		}
-		if (MasteringVoiceObj == nullptr)
+		if (!MasteringVoiceObj)
 		{
 			return;
 		}
@@ -233,7 +233,7 @@ public:
 			nullptr,
 			nullptr
 		);
-		if (hr != 0)
+		if (hr)
 		{
 			TVPThrowExceptionMessage(TJS_W("Failed to call FAudio_CreateSourceVoice"));
 		}
@@ -242,12 +242,12 @@ public:
 
 	virtual ~FAudioStream() override
 	{
-		if (SourceVoiceObj != nullptr)
+		if (SourceVoiceObj)
 		{
 			FAudioVoice_DestroyVoice(SourceVoiceObj);
 			SourceVoiceObj = nullptr;
 		}
-		if (Owner != nullptr)
+		if (Owner)
 		{
 			Owner->DelStream(this);
 			Owner = nullptr;
@@ -262,7 +262,7 @@ public:
 
 	virtual void Enqueue(void *data, size_t size, bool last) override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -275,7 +275,7 @@ public:
 	}
 	virtual void ClearQueue() override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -283,7 +283,7 @@ public:
 	}
 	virtual tjs_uint32 GetQueuedCount() const override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return 0;
 		}
@@ -293,7 +293,7 @@ public:
 	}
 	virtual tjs_uint64 GetSamplesPlayed() const override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return 0;
 		}
@@ -304,7 +304,7 @@ public:
 
 	virtual void StartStream() override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -312,7 +312,7 @@ public:
 	}
 	virtual void StopStream() override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -321,7 +321,7 @@ public:
 	}
 	virtual void AbortStream() override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -380,7 +380,7 @@ public:
 	}
 	virtual void SetFrequency(tjs_int freq) override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -389,7 +389,7 @@ public:
 	}
 	virtual tjs_int GetFrequency() const override
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return 0;
 		}
@@ -400,7 +400,7 @@ public:
 
 	void SetVolumeToFAudio()
 	{
-		if (SourceVoiceObj == nullptr)
+		if (!SourceVoiceObj)
 		{
 			return;
 		}
@@ -430,7 +430,7 @@ public:
 
 	virtual void OnBufferEnd(void *pBufferContext)
 	{
-		if (QueueCallback == nullptr)
+		if (!QueueCallback)
 		{
 			return;
 		}
@@ -440,10 +440,10 @@ public:
 	static void OnBufferEndEntry(FAudioVoiceCallback *in_callback, void *pBufferContext)
 	{
 		FAudioVoiceCallbackWithUserdata *callback = (FAudioVoiceCallbackWithUserdata *)in_callback;
-		if (callback != nullptr)
+		if (callback)
 		{
 			FAudioStream *thisobj = (FAudioStream *)(callback->userdata);
-			if (thisobj != nullptr)
+			if (thisobj)
 			{
 				thisobj->OnBufferEnd(pBufferContext);
 			}

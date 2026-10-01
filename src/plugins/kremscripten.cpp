@@ -127,7 +127,7 @@ class iTJSDispatch2WrapperForEmscripten : public tTJSDispatch
 			func_to_call = v[tjs_string(membername)];
 		}
 		emscripten::val vthis = emscripten::val::null();
-		if (objthis != nullptr && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
+		if (objthis && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
 		{
 			iTJSDispatch2WrapperForEmscripten *objthis_wrap = (iTJSDispatch2WrapperForEmscripten *)objthis;
 			vthis = objthis_wrap->get_val();
@@ -145,7 +145,7 @@ class iTJSDispatch2WrapperForEmscripten : public tTJSDispatch
 		}
 		emscripten::val func_to_call = v[(tjs_int32)num];
 		emscripten::val vthis = emscripten::val::null();
-		if (objthis != nullptr && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
+		if (objthis && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
 		{
 			iTJSDispatch2WrapperForEmscripten *objthis_wrap = (iTJSDispatch2WrapperForEmscripten *)objthis;
 			vthis = objthis_wrap->get_val();
@@ -161,7 +161,7 @@ class iTJSDispatch2WrapperForEmscripten : public tTJSDispatch
 			return TJS_E_NOTIMPL;
 		}
 		emscripten::val vthis = emscripten::val::null();
-		if (objthis != nullptr && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
+		if (objthis && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
 		{
 			iTJSDispatch2WrapperForEmscripten *objthis_wrap = (iTJSDispatch2WrapperForEmscripten *)objthis;
 			vthis = objthis_wrap->get_val();
@@ -173,7 +173,7 @@ class iTJSDispatch2WrapperForEmscripten : public tTJSDispatch
 	public: tjs_error TJS_INTF_METHOD PropGetByNum(tjs_uint32 flag, tjs_int num, tTJSVariant *result, iTJSDispatch2 *objthis)
 	{
 		emscripten::val vthis = emscripten::val::null();
-		if (objthis != nullptr && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
+		if (objthis && objthis->IsInstanceOf(0, nullptr, nullptr, __internal_TJS2JS_wrapper, nullptr) == TJS_S_TRUE)
 		{
 			iTJSDispatch2WrapperForEmscripten *objthis_wrap = (iTJSDispatch2WrapperForEmscripten *)objthis;
 			vthis = objthis_wrap->get_val();
@@ -229,14 +229,7 @@ class iTJSDispatch2WrapperForEmscripten : public tTJSDispatch
 
 	public: tjs_error TJS_INTF_METHOD IsInstanceOf(tjs_uint32 flag, const tjs_char * membername, tjs_uint32 *hint, const tjs_char * classname, iTJSDispatch2 *objthis)
 	{
-		if (membername == nullptr)
-		{
-			if (!TJS_strcmp(classname, __internal_TJS2JS_wrapper))
-			{
-				return TJS_S_TRUE;
-			}
-		}
-		return TJS_S_FALSE;
+		return (!membername && !TJS_strcmp(classname, __internal_TJS2JS_wrapper)) ? TJS_S_TRUE : TJS_S_FALSE;
 	}
 
 	public: emscripten::val get_val()
@@ -273,7 +266,7 @@ static tTJSVariant emscripten_val_to_tjs_variant(emscripten::val v, emscripten::
 			{
 				iTJSDispatch2 *tjsobj = (iTJSDispatch2 *)pd[obj_name].as<tjs_uint32>();
 				iTJSDispatch2 *tjsobjthis = (iTJSDispatch2 *)pd[objthis_name].as<tjs_uint32>();
-				if (tjsobjthis == nullptr)
+				if (!tjsobjthis)
 				{
 					tjsobjthis = tjsobj;
 				}
@@ -289,7 +282,7 @@ static tTJSVariant emscripten_val_to_tjs_variant(emscripten::val v, emscripten::
 		}
 		if (tjsobj)
 		{
-			if (tjsobjthis == nullptr)
+			if (!tjsobjthis)
 			{
 				result = tTJSVariant(tjsobj, tjsobj);
 			}
@@ -330,7 +323,7 @@ static emscripten::val tjs_variant_to_emscripten_val(tTJSVariant v)
 	{
 		iTJSDispatch2 *obj = v.AsObjectNoAddRef();
 		iTJSDispatch2 *objthis = v.AsObjectThisNoAddRef();
-		if (obj == nullptr)
+		if (!obj)
 		{
 			return emscripten::val::null();
 		}
@@ -760,7 +753,7 @@ emscripten::val getStorageString(tjs_string place, tjs_string modestr)
 emscripten::val internal_TJS2JS_call_function(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val args_array)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return emscripten::val::undefined();
 	}
@@ -792,7 +785,7 @@ emscripten::val internal_TJS2JS_call_function(tjs_uint32 ptr_object, tjs_uint32 
 emscripten::val internal_TJS2JS_construct_object(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val args_array)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return emscripten::val::undefined();
 	}
@@ -825,7 +818,7 @@ emscripten::val internal_TJS2JS_construct_object(tjs_uint32 ptr_object, tjs_uint
 emscripten::val internal_TJS2JS_get_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val v)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return emscripten::val::undefined();
 	}
@@ -864,7 +857,7 @@ emscripten::val internal_TJS2JS_get_object_property(tjs_uint32 ptr_object, tjs_u
 		{
 			if (type == js_string_string && v == js_string_toString)
 			{
-				if (objthis == nullptr)
+				if (!objthis)
 				{
 					objthis = obj;
 				}
@@ -880,7 +873,7 @@ emscripten::val internal_TJS2JS_get_object_property(tjs_uint32 ptr_object, tjs_u
 bool internal_TJS2JS_set_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val v, emscripten::val property_value)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return false;
 	}
@@ -921,7 +914,7 @@ bool internal_TJS2JS_set_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_o
 bool internal_TJS2JS_has_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val v)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return false;
 	}
@@ -947,7 +940,7 @@ bool internal_TJS2JS_has_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_o
 bool internal_TJS2JS_delete_object_property(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis, emscripten::val v)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return false;
 	}
@@ -971,7 +964,7 @@ bool internal_TJS2JS_delete_object_property(tjs_uint32 ptr_object, tjs_uint32 pt
 emscripten::val internal_TJS2JS_get_object_keys(tjs_uint32 ptr_object, tjs_uint32 ptr_objectthis)
 {
 	iTJSDispatch2 *obj = (iTJSDispatch2 *)ptr_object;
-	if (obj == nullptr)
+	if (!obj)
 	{
 		return emscripten::val::undefined();
 	}
