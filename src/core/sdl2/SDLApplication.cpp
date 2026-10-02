@@ -710,6 +710,20 @@ public:
 	bool should_try_parent_window(SDL_Event event);
 	void window_receive_event(SDL_Event event);
 	bool window_receive_event_input(SDL_Event event);
+#ifdef KRKRSDL2_LIBRETRO
+	/* libretro has a single framebuffer and no compositor: modal windows are
+	 * blended into the primary window's frame instead of presented on their
+	 * own (see the definitions for details). */
+	static TVPWindowWindow *FindPrimaryWindow();
+	void PublishLibretroSurface();
+	static void WindowOffset(TVPWindowWindow *win, TVPWindowWindow *base, int &ox, int &oy);
+	/* The libretro shim has no window of its own: it pushes synthetic events
+	 * whose coordinates are in the primary window's client space. A modal
+	 * window (YesNoDialog, save-load confirmation) is displaced from the
+	 * primary by the position the game assigned it, so the event must be
+	 * shifted into the modal's own client space before delivery. */
+	void TranslateLibretroEvent(SDL_Event &event);
+#endif
 };
 
 TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
@@ -1251,6 +1265,18 @@ void TVPWindowWindow::ShowWindowAsModal()
 		}
 	}
 	this->in_mode_ = false;
+	/* The modal loop is over: hand the active-window role back to the window
+	 * the modal was opened from. Otherwise _currentWindowWindow keeps pointing
+	 * at this (now idle) dialog, and sdl_process_events delivers every later
+	 * event to it — the underlying save/load menu appears frozen. */
+	if (_currentWindowWindow == this)
+	{
+		_currentWindowWindow = this->_prevWindow ? this->_prevWindow : this->_nextWindow;
+		if (_currentWindowWindow)
+		{
+			_currentWindowWindow->BringToFront();
+		}
+	}
 #endif
 }
 bool TVPWindowWindow::GetVisible()
@@ -1697,6 +1723,148 @@ void TVPWindowWindow::Show()
 	if (this->window)
 		SDL_ShowWindow(this->window);
 }
+#ifdef KRKRSDL2_LIBRETRO
+TVPWindowWindow *TVPWindowWindow::FindPrimaryWindow()
+{
+	/* TVPWindowWindow instances form a list: _lastWindowWindow is the newest,
+	 * and each _prevWindow points at the previously created one. The primary
+	 * window is the oldest — the only one with no _prevWindow. */
+	TVPWindowWindow *w = _lastWindowWindow;
+	while (w && w->_prevWindow)
+	{
+		w = w->_prevWindow;
+	}
+	return w;
+}
+
+/* Position of this window's content origin relative to `base`'s content
+ * origin, in pixels. Modal placement (YesNoDialog setPos) is expressed in the
+ * *client* coordinate space of the main window, which is what this returns. */
+void TVPWindowWindow::WindowOffset(TVPWindowWindow *win, TVPWindowWindow *base, int &ox, int &oy)
+{
+	ox = 0;
+	oy = 0;
+	if (!win || !base || !win->window || !base->window)
+	{
+		return;
+	}
+	int wx = 0, wy = 0, bx = 0, by = 0;
+	SDL_GetWindowPosition(win->window, &wx, &wy);
+	SDL_GetWindowPosition(base->window, &bx, &by);
+	ox = wx - bx;
+	oy = wy - by;
+}
+
+void TVPWindowWindow::PublishLibretroSurface()
+{
+	if (!this->surface)
+	{
+		return;
+	}
+	TVPWindowWindow *primary = FindPrimaryWindow();
+	if (!primary || !primary->surface || this == primary)
+	{
+		/* Primary (or no primary known): publish as before. */
+		SDL_libretro_surface = (void*)this->surface;
+		SDL_libretro_surface_updated = 1;
+		return;
+	}
+
+	/* Only a *live* modal is composited. Once the dialog's modal loop ends
+	 * (YesNoDialog close()), the window stops being drawn but is still in the
+	 * list; overlaying its last frame would leave a stale dialog on screen. */
+	if (!this->in_mode_ || !this->isVisible)
+	{
+		return;
+	}
+
+	int ox = 0, oy = 0;
+	WindowOffset(this, primary, ox, oy);
+	/* A window whose position is not inside the primary is off-screen; skip. */
+	if (ox >= primary->surface->w || oy >= primary->surface->h ||
+		ox + this->surface->w <= 0 || oy + this->surface->h <= 0)
+	{
+		return;
+	}
+
+	static SDL_Surface *shadow = nullptr;
+	static int shadow_w = 0, shadow_h = 0;
+	if (!shadow || shadow_w != primary->surface->w || shadow_h != primary->surface->h)
+	{
+		if (shadow)
+		{
+			SDL_FreeSurface(shadow);
+		}
+		shadow = SDL_CreateRGBSurface(0, primary->surface->w, primary->surface->h, 32,
+			0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
+		if (!shadow)
+		{
+			SDL_libretro_surface = (void*)primary->surface;
+			SDL_libretro_surface_updated = 1;
+			return;
+		}
+		shadow_w = primary->surface->w;
+		shadow_h = primary->surface->h;
+	}
+
+	SDL_LockSurface(primary->surface);
+	SDL_LockSurface(shadow);
+	memcpy(shadow->pixels, primary->surface->pixels,
+		(size_t)primary->surface->pitch * primary->surface->h);
+	SDL_UnlockSurface(shadow);
+	SDL_UnlockSurface(primary->surface);
+
+	if (this->surface->format->BytesPerPixel == 4 && shadow->format->BytesPerPixel == 4)
+	{
+		SDL_LockSurface(this->surface);
+		SDL_LockSurface(shadow);
+		/* Alpha-blend the modal onto the shadow. The engine's modal bitmaps
+		 * carry a meaningful alpha channel (setMaskRegion is used to give the
+		 * dialog its irregular shape). */
+		for (int y = 0; y < this->surface->h; y++)
+		{
+			int dy = oy + y;
+			if (dy < 0 || dy >= shadow->h)
+			{
+				continue;
+			}
+			Uint32 *sp = (Uint32*)((Uint8*)this->surface->pixels + (size_t)y * this->surface->pitch);
+			Uint32 *dp = (Uint32*)((Uint8*)shadow->pixels + (size_t)dy * shadow->pitch);
+			for (int x = 0; x < this->surface->w; x++)
+			{
+				int dx = ox + x;
+				if (dx < 0 || dx >= shadow->w)
+				{
+					continue;
+				}
+				Uint32 s = sp[x];
+				Uint32 a = (s >> 24) & 0xff;
+				if (a == 0)
+				{
+					continue;
+				}
+				if (a == 0xff)
+				{
+					dp[dx] = s;
+					continue;
+				}
+				Uint32 d = dp[dx];
+				Uint32 ia = 255 - a;
+				Uint32 r = (((s >> 16) & 0xff) * a + ((d >> 16) & 0xff) * ia) / 255;
+				Uint32 g = (((s >> 8) & 0xff) * a + ((d >> 8) & 0xff) * ia) / 255;
+				Uint32 b = ((s & 0xff) * a + (d & 0xff) * ia) / 255;
+				dp[dx] = 0xff000000u | (r << 16) | (g << 8) | b;
+			}
+		}
+		SDL_UnlockSurface(shadow);
+		SDL_UnlockSurface(this->surface);
+	}
+
+	SDL_libretro_surface = (void*)shadow;
+	SDL_libretro_surface_updated = 1;
+}
+#endif /* KRKRSDL2_LIBRETRO */
+
 void TVPWindowWindow::TickBeat()
 {
 	if (!this->visibilityHasInitialized)
@@ -1784,8 +1952,7 @@ void TVPWindowWindow::TickBeat()
 			{
 				SDL_UpdateWindowSurfaceRects(this->window, &rect, 1);
 				#ifdef KRKRSDL2_LIBRETRO
-				SDL_libretro_surface = (void*)this->surface;
-				SDL_libretro_surface_updated = 1;
+				this->PublishLibretroSurface();
 				#endif
 				this->hasDrawn = true;
 			}
@@ -2649,6 +2816,34 @@ void TVPWindowWindow::window_receive_event(SDL_Event event)
 	}
 }
 
+void TVPWindowWindow::TranslateLibretroEvent(SDL_Event &event)
+{
+	/* Only modal windows are displaced: the synthetic event the libretro shim
+	 * pushes is expressed in the primary window's client space, while the
+	 * modal's own layers were laid out in the modal's client space. */
+	if (this->in_mode_)
+	{
+		TVPWindowWindow *primary = FindPrimaryWindow();
+		if (primary && primary != this)
+		{
+			int ox = 0, oy = 0;
+			WindowOffset(this, primary, ox, oy);
+			switch (event.type)
+			{
+				case SDL_MOUSEMOTION:
+					event.motion.x -= ox; event.motion.y -= oy;
+					break;
+				case SDL_MOUSEBUTTONDOWN:
+				case SDL_MOUSEBUTTONUP:
+					event.button.x -= ox; event.button.y -= oy;
+					break;
+				default:
+					break;
+			}
+		}
+	}
+}
+
 bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 {
 	if (this->isBeingDeleted)
@@ -2656,6 +2851,7 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 		delete this;
 		return false;
 	}
+	this->TranslateLibretroEvent(event);
 	if (this->should_try_parent_window(event))
 	{
 		if (!this->in_mode_)
