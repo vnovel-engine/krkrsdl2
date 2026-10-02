@@ -23,3 +23,31 @@ class Rain       { function Rain() {}       function start() {} function stop() 
 class Zoom       { function Zoom() {}       function start() {} function stop() {} function finalize() {} }
 class MotionBlur { function MotionBlur() {} function start() {} function stop() {} function finalize() {} }
 class FallenLeaf { function FallenLeaf() {} function start() {} function stop() {} function finalize() {} }
+
+// adjustmoni.dll — dialog position adjuster. YesNoDialog.tjs calls
+// global.AdjustMoni(%[window,left2,top2,width2,height2]) and reads .x/.y to
+// place the dialog. Without this the member is undefined and the script throws
+// ("Member \"AdjustMoni\" does not exist"), e.g. when a Yes/No dialog appears
+// during save/load. Reproduce the script's commented-out intent: centre the
+// dialog over its parent window, clamped to the screen.
+function AdjustMoni(params)
+{
+	var w = params.width2, h = params.height2;
+	var x = (System.screenWidth  - w) >> 1;
+	var y = (System.screenHeight - h) >> 1;
+	try
+	{
+		var win = params.window;
+		if(win !== void)
+		{
+			x = ((win.width  - w) >> 1) + win.left;
+			y = ((win.height - h) >> 1) + win.top;
+		}
+	}
+	catch(e) { /* keep the screen-centred fallback */ }
+	if(x < 0) x = 0;
+	if(y < 0) y = 0;
+	if(x + w > System.screenWidth)  x = System.screenWidth  - w;
+	if(y + h > System.screenHeight) y = System.screenHeight - h;
+	return %[ "x" => int(x), "y" => int(y) ];
+}

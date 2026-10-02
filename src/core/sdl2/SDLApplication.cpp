@@ -2369,40 +2369,38 @@ bool TVPWindowWindow::should_try_parent_window(SDL_Event event)
 	if (this->window && this->_prevWindow)
 	{
 		uint32_t windowID = SDL_GetWindowID(this->window);
+		/* Events synthesised by the libretro shim (engine_kirikiri_cabi) are
+		 * pushed via SDL_PushEvent with windowID == 0, since that layer has no
+		 * real SDL window. Such an event is addressed to no particular window,
+		 * so it must be handled by whichever window is currently active —
+		 * notably the modal (WindowAsModal) windows used by Yes/No dialogs and
+		 * the save/load menu. Treating windowID == 0 as "not another window"
+		 * keeps the event in the active (modal) window; the original check
+		 * bounced it to the parent, so clicks in those modals never registered. */
+		#define KRKR_EV_WID(w) ((w) != 0 && (w) != windowID)
 		switch (event.type)
 		{
-			case SDL_DROPFILE:
-			case SDL_DROPTEXT:
-			case SDL_DROPBEGIN:
-			case SDL_DROPCOMPLETE:
-				tryParentWindow = event.drop.windowID != windowID;
-				break;
-			case SDL_KEYDOWN:
-			case SDL_KEYUP:
-				tryParentWindow = event.key.windowID != windowID;
-				break;
+			case SDL_DROPFILE: case SDL_DROPTEXT:
+			case SDL_DROPBEGIN: case SDL_DROPCOMPLETE:
+				tryParentWindow = KRKR_EV_WID(event.drop.windowID); break;
+			case SDL_KEYDOWN: case SDL_KEYUP:
+				tryParentWindow = KRKR_EV_WID(event.key.windowID); break;
 			case SDL_MOUSEMOTION:
-				tryParentWindow = event.motion.windowID != windowID;
-				break;
-			case SDL_MOUSEBUTTONDOWN:
-			case SDL_MOUSEBUTTONUP:
-				tryParentWindow = event.button.windowID != windowID;
-				break;
+				tryParentWindow = KRKR_EV_WID(event.motion.windowID); break;
+			case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
+				tryParentWindow = KRKR_EV_WID(event.button.windowID); break;
 			case SDL_MOUSEWHEEL:
-				tryParentWindow = event.wheel.windowID != windowID;
-				break;
+				tryParentWindow = KRKR_EV_WID(event.wheel.windowID); break;
 			case SDL_TEXTEDITING:
-				tryParentWindow = event.edit.windowID != windowID;
-				break;
+				tryParentWindow = KRKR_EV_WID(event.edit.windowID); break;
 			case SDL_TEXTINPUT:
-				tryParentWindow = event.text.windowID != windowID;
-				break;
+				tryParentWindow = KRKR_EV_WID(event.text.windowID); break;
 			case SDL_WINDOWEVENT:
-				tryParentWindow = event.window.windowID != windowID;
-				break;
+				tryParentWindow = KRKR_EV_WID(event.window.windowID); break;
 			default:
 				break;
 		}
+		#undef KRKR_EV_WID
 	}
 	return tryParentWindow;
 }
@@ -3228,10 +3226,13 @@ static bool krkr_system_fonts_loaded = false;
 static void TVPLoadSystemFonts() {
 	if (krkr_system_fonts_loaded) return;
 	krkr_system_fonts_loaded = true;
+	const char* home = getenv("HOME");
+	std::string home_fonts = home ? (std::string(home) + "/.fonts") : std::string();
+	std::string home_local_fonts = home ? (std::string(home) + "/.local/share/fonts") : std::string();
 	const char* dirs[] = {
 		"/usr/share/fonts", "/usr/local/share/fonts",
-		getenv("HOME") ? (std::string(getenv("HOME")) + "/.fonts").c_str() : nullptr,
-		getenv("HOME") ? (std::string(getenv("HOME")) + "/.local/share/fonts").c_str() : nullptr,
+		home_fonts.empty() ? nullptr : home_fonts.c_str(),
+		home_local_fonts.empty() ? nullptr : home_local_fonts.c_str(),
 		nullptr
 	};
 	for (int d = 0; dirs[d]; d++) {
