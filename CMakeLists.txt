@@ -36,6 +36,7 @@ option(OPTION_ENABLE_CASEINSENSITIVITY "Enable case insensitivity. May malfuncti
 option(OPTION_ENABLE_SDL_THREADS "Enable SDL threads. May be more useful on platforms that do not have a good implementation of std::thread." OFF)
 option(OPTION_ENABLE_EXTERNAL_PLUGINS "Enable external plugins. This will make Plugins.link load a plugin instead of a no-op." ON)
 option(OPTION_BUILD_MACOS_BUNDLE "Build an application bundle for macOS." ON)
+option(OPTION_DEBUG_PROBES "Compile in the ad-hoc stderr probes (font/audio/input diagnostics)." OFF)
 option(KRKRSDL2_EMSCRIPTEN_ENABLE_JS_FALLBACK "Enable JavaScript fallback for the Emscripten build." OFF)
 option(KRKRSDL2_EMSCRIPTEN_ENABLE_BIGINT "Enable BigInt support for the Emscripten build." ON)
 option(KRKRSDL2_EMSCRIPTEN_ENABLE_WASM_SIMD "Enable WebAssembly SIMD for the Emscripten build." OFF)
@@ -80,6 +81,11 @@ if((OPTION_ENABLE_EXTERNAL_PLUGINS) AND (NOT (VITA OR NINTENDO_SWITCH)))
 set(EVAL_ENABLE_EXTERNAL_PLUGINS ON)
 else()
 set(EVAL_ENABLE_EXTERNAL_PLUGINS OFF)
+endif()
+
+# Ad-hoc stderr probes (font/audio/input diagnostics). Off by default.
+if(OPTION_DEBUG_PROBES)
+list(APPEND KRKRSDL2_DEFINITIONS TVP_DEBUG_PROBES)
 endif()
 
 if(NOT KRKRSDL2_ENABLE_PRECOMPILED_HEADERS)
@@ -288,6 +294,27 @@ list(APPEND KRKRSDL2_DEFINITIONS
 	TVP_VORBIS_DECODER_IMPLEMENT
 )
 message(STATUS "krkrsdl2: Ogg Vorbis decoder enabled (libvorbisfile ${VORBISFILE_VERSION})")
+endif()
+endif()
+endif()
+
+# FreeType: use the SYSTEM library, not the vendored krkrz fork.
+# The vendored copy is FreeType 2.6.3 (2016), which fails to parse the game's
+# Noto Sans CJK fonts (FT_Err_Invalid_Table, err=8) — they register with
+# faces=0, and any path that falls back to the default font ("Noto Sans CJK
+# JP") then throws (e.g. the save screen). The sources.txt list no longer
+# compiles the vendored freetype; link the system one instead.
+if(NOT (${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten"))
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+pkg_check_modules(FREETYPE2 QUIET IMPORTED_TARGET freetype2)
+if(FREETYPE2_FOUND)
+list(APPEND KRKRSDL2_LIBS
+	PkgConfig::FREETYPE2
+)
+message(STATUS "krkrsdl2: FreeType ${FREETYPE2_VERSION} (system)")
+else()
+message(FATAL_ERROR "krkrsdl2: system freetype2 not found (required)")
 endif()
 endif()
 endif()

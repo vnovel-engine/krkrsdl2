@@ -2949,6 +2949,38 @@ static void process_events()
 static bool process_events()
 #endif
 {
+	/* Frame limiter. The engine main loop has no pacing of its own, and the
+	 * fpslimit plugin (which sets System.fpslimit) is a no-op stub, so while
+	 * anything is animating the loop re-runs as fast as the CPU allows and
+	 * pegs a core. Sleep off the remainder of the frame budget after each
+	 * iteration. Rate: KRKRSDL2_FPS (default 60); 0 disables the limit. */
+#ifndef __EMSCRIPTEN__
+	static double s_frame_budget = -1.0;
+	static struct timespec s_last_tick = {0, 0};
+	if (s_frame_budget < 0.0)
+	{
+		const char *e = getenv("KRKRSDL2_FPS");
+		int fps = e ? atoi(e) : 60;
+		s_frame_budget = fps > 0 ? 1.0 / (double)fps : 0.0;
+	}
+	if (s_frame_budget > 0.0 && s_last_tick.tv_sec != 0)
+	{
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		double dt = (now.tv_sec - s_last_tick.tv_sec)
+			+ (now.tv_nsec - s_last_tick.tv_nsec) / 1e9;
+		if (dt < s_frame_budget)
+		{
+			double wait = s_frame_budget - dt;
+			struct timespec rem;
+			rem.tv_sec  = (time_t)wait;
+			rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
+			nanosleep(&rem, NULL);
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &s_last_tick);
+#endif /* !__EMSCRIPTEN__ */
+
 	try
 	{
 		try
