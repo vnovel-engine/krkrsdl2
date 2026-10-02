@@ -1,6 +1,6 @@
 [submodule "external/krkrz"]
 	path = external/krkrz
-	url = https://github.com/krkrsdl2/krkrz.git
+	url = https://gitlab.com/matchaxnb/krkrz.git
 [submodule "external/simde"]
 	path = external/simde
 	url = https://github.com/simd-everywhere/simde.git
@@ -15,4 +15,4 @@
 	url = https://github.com/madler/zlib.git
 [submodule "external/FAudio"]
 	path = external/FAudio
-	url = https://github.com/FNA-XNA/FAudio.git
+	url = https://gitlab.com/matchaxnb/FAudio.git

@@ -63,20 +63,14 @@ extern ttstr TVPGetLicenseString();
 //---------------------------------------------------------------------------
 static void TVPShowSimpleMessageBox(const ttstr & text, const ttstr & caption)
 {
-#if 0
-	HWND hWnd = TVPGetModalWindowOwnerHandle();
-	if( hWnd == INVALID_HANDLE_VALUE ) {
-		hWnd = NULL;
-	}
-	::MessageBox( hWnd, text.AsStdString().c_str(), caption.AsStdString().c_str(), MB_OK|MB_ICONINFORMATION );
-#endif
 	tjs_string t_utf16 = text.AsStdString();
 	std::string t_utf8;
 	tjs_string c_utf16 = caption.AsStdString();
 	std::string c_utf8;
 	if (TVPUtf16ToUtf8(t_utf8, t_utf16) && TVPUtf16ToUtf8(c_utf8, c_utf16))
 	{
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, c_utf8.c_str(), t_utf8.c_str(), nullptr);
+		fprintf(stderr, "[%s] %s\n", c_utf8.c_str(), t_utf8.c_str());
+		fflush(stderr);
 	}
 }
 //---------------------------------------------------------------------------
@@ -583,6 +577,19 @@ ttstr TVPGetPersonalPath()
 	}
 
 #endif
+	/* libretro frontends provide a per-core save directory via
+	 * RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY; honour it here so games that use
+	 * System.personalPath (e.g. Fate/stay night's "Fate_Savedata") write into
+	 * the frontend's save location instead of next to the game data. */
+	{
+		const char *pp = getenv("KRKRSDL2_PERSONAL_PATH");
+		if (pp && *pp)
+		{
+			ttstr path(TVPNormalizeStorageName(ttstr(pp)));
+			if (path.GetLastChar() != TJS_W('/')) path += TJS_W('/');
+			return path;
+		}
+	}
 	return TVPGetAppPath();
 }
 //---------------------------------------------------------------------------

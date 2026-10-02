@@ -13,6 +13,7 @@
 #include "MsgIntf.h"
 
 #include "StorageImpl.h"
+#include "tjsArray.h"
 #include "WindowImpl.h"
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
@@ -1613,6 +1614,69 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLocalName)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/getLocalName)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirlist)
+{
+	// KiriKiriZ Storages.dirlist : returns an array of the entries in a
+	// directory ("."/".." included as "./" and "../"), used by games to
+	// enumerate e.g. the fonts/ folder.
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	iTJSDispatch2 * array = TJSCreateArrayObject();
+	try
+	{
+		tjs_int idx = 0;
+		auto push = [&](const tjs_char *s) {
+			tTJSVariant val(s);
+			array->PropSetByNum(TJS_MEMBERENSURE, idx++, &val, array);
+		};
+
+		ttstr name(*param[0]);
+		bool ok = true;
+		try { TVPGetLocalName(name); }
+		catch(...) { ok = false; }
+
+		std::string local;
+		if(ok) ok = TVPUtf16ToUtf8(local, name.AsStdString());
+
+		DIR *dr = ok ? opendir(local.c_str()) : nullptr;
+		if(dr)
+		{
+			push(TJS_W("./"));
+			push(TJS_W("../"));
+			struct dirent *entry;
+			while((entry = readdir(dr)) != nullptr)
+			{
+				if(entry->d_name[0] == '.' &&
+					(entry->d_name[1] == '\0' ||
+					 (entry->d_name[1] == '.' && entry->d_name[2] == '\0')))
+					continue;
+				tjs_char fname[512];
+				tjs_int count = TVPUtf8ToWideCharString(entry->d_name, fname);
+				if(count < 0) continue;
+				fname[count] = TJS_W('\0');
+				ttstr file(fname);
+#ifdef KRKRZ_CASE_INSENSITIVE
+				file.ToLowerCase();
+#endif
+				if(entry->d_type == DT_DIR) file += TJS_W("/");
+				push(file.c_str());
+			}
+			closedir(dr);
+		}
+
+		if(result) *result = tTJSVariant(array, array);
+	}
+	catch(...)
+	{
+		array->Release();
+		throw;
+	}
+	array->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/dirlist)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectFile)
 {

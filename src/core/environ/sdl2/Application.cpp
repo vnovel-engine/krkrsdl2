@@ -129,8 +129,15 @@ static MemoryLeaksDebugBreakPoint gMemoryLeaksDebugBreakPoint;
 #endif
 tjs_string ExePath() {
 	static tjs_string exepath(TJS_W(""));
+	if (getenv("KRKRSDL2_LIBRETRO")) {
+		char cwd[4096];
+		if (getcwd(cwd, sizeof(cwd))) {
+			tjs_string result;
+			TVPUtf8ToUtf16(result, std::string(cwd));
+			return result + TJS_W("/krkrsdl2");
+		}
+	}
 #if defined(_WIN32)
-	if (exepath.empty())
 	{
 		tjs_char szFull[_MAX_PATH];
 		::GetModuleFileName(NULL, szFull, sizeof(szFull) / sizeof(tjs_char));
@@ -465,9 +472,13 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 		// banner
 		TVPAddImportantLog( TVPFormatMessage(TVPProgramStartedOn, TVPGetOSName(), TVPGetPlatformName()) );
 
+		// Load plugins before base systems (XP3 filter must be set
+		// before data.xp3 archive is opened in SysInitImpl)
+#ifndef TVP_IGNORE_LOAD_TPM_PLUGIN
+		TVPLoadPluigins(); // load plugin module *.tpm
+#endif
 		// TVPInitializeBaseSystems
 		TVPInitializeBaseSystems();
-
 #if 0
 		Initialize();
 #endif
@@ -485,13 +496,6 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 
 		SetTitle( tjs_string(TVPKirikiri) );
 		TVPSystemControl = new tTVPSystemControl();
-#if 0
-#ifndef TVP_IGNORE_LOAD_TPM_PLUGIN
-		TVPLoadPluigins(); // load plugin module *.tpm
-#endif
-		// Check digitizer
-		CheckDigitizer();
-#endif
 
 #ifdef KRKRSDL2_ENABLE_ASYNC_IMAGE_LOAD
 		// start image load thread
@@ -499,10 +503,8 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 #endif
 
 		if(TVPProjectDirSelected) TVPInitializeStartupScript();
-
-#if 0
-		Run();
-#endif
+		fprintf(stderr, "DEBUG: startup script loaded, tarminate=%d\n", (int)tarminate_);
+		// Run() was here in #if 0, removed
 
 #if 0
 		try {
@@ -749,9 +751,6 @@ void tTVPApplication::BringToFront() {
 	}
 }
 void tTVPApplication::ShowException( const tjs_char* e ) {
-#if 0
-	::MessageBox( NULL, e, TVPFatalError, MB_OK );
-#endif
 	TVPAddLog(ttstr(TVPFatalError) + TJS_W(": ") + e);
 	tjs_string e_utf16 = e;
 	std::string e_utf8;
@@ -759,7 +758,8 @@ void tTVPApplication::ShowException( const tjs_char* e ) {
 	std::string v_utf8;
 	if (TVPUtf16ToUtf8(v_utf8, v_utf16) && TVPUtf16ToUtf8(e_utf8, e_utf16))
 	{
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, v_utf8.c_str(), e_utf8.c_str(), nullptr);
+		fprintf(stderr, "[%s] %s\n", v_utf8.c_str(), e_utf8.c_str());
+		fflush(stderr);
 	}
 }
 

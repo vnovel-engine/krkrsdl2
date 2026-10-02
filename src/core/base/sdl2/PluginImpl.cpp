@@ -9,8 +9,8 @@
 // "Plugins" class implementation / Service for plug-ins
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
-
 #include <algorithm>
+#include <dirent.h>
 #include <functional>
 #include "ScriptMgnIntf.h"
 #include "PluginImpl.h"
@@ -268,6 +268,40 @@ struct tTVPPlugin
 
 	bool Uninit();
 };
+
+/* Plugins the engine simulates itself. Many games call Plugins.link()
+ * unguarded for these Windows-only plugins; if the load is made to fail they
+ * abort at startup. Treating them as successfully-linked no-ops keeps the
+ * scripts running, while the engine supplies the actual behaviour (fonts,
+ * frame limiting, file stats, LayerEx rendering, Ogg Vorbis decoding).
+ *
+ * Deliberately NOT listed: krkrsteam.dll. Fata Morgana links it inside a
+ * try/catch and relies on the failure to set `global.Steam = void`. */
+static bool TVPIsEngineStubPlugin(const ttstr &name)
+{
+	ttstr n(name);
+	n.ToLowerCase();
+	ttstr base = TVPExtractStorageName(n);
+	static const tjs_char *stubs[] = {
+		TJS_W("fpslimit.dll"),
+		TJS_W("addfont.dll"),
+		TJS_W("fstat.dll"),
+		TJS_W("layereximage.dll"),
+		// The engine provides the actual Ogg Vorbis decoder (VorbisCodecDecoder.cpp);
+		// the plugin link itself is a harmless no-op.
+		TJS_W("wuvorbis.dll"),
+		// Screen-brightness/contrast adjustment plugin; cosmetic no-op.
+		TJS_W("adjustmoni.dll"),
+		// Transition-handler provider (mosaic/wave/...). The engine has its own
+		// transition system; the scripts' effect classes are no-ops in
+		// PluginStubs.tjs, so the link itself is a harmless success.
+		TJS_W("extrans.dll"),
+		nullptr
+	};
+	for (int i = 0; stubs[i]; i++)
+		if (base == ttstr(stubs[i])) return true;
+	return false;
+}
 //---------------------------------------------------------------------------
 tTVPPlugin::tTVPPlugin(const ttstr & name, ITSSStorageProvider *storageprovider)
 {
@@ -289,7 +323,16 @@ tTVPPlugin::tTVPPlugin(const ttstr & name, ITSSStorageProvider *storageprovider)
 		if (Holder != NULL)
 		{
 			delete Holder;
+			Holder = NULL;
 		}
+		if (TVPIsEngineStubPlugin(name))
+		{
+			std::string nm; TVPUtf16ToUtf8(nm, name.AsStdString());
+			fprintf(stderr, "TVPLoadPlugin: '%s' simulated by engine stub\n", nm.c_str());
+			return; // successfully "linked" as a no-op
+		}
+		/* Unknown plugin: preserve KiriKiri semantics and throw so that games
+		 * which guard the link with try/catch take their fallback path. */
 		TVPThrowExceptionMessage(TVPCannotLoadPlugin, name);
 	}
 
@@ -552,9 +595,9 @@ bool TVPUnloadPlugin(const ttstr & name)
 
 
 
-#if 0
+
 //---------------------------------------------------------------------------
-// plug-in autoload support
+// plug-in autoload support (cross-platform using dirent)
 //---------------------------------------------------------------------------
 struct tTVPFoundPlugin
 {
@@ -563,72 +606,57 @@ struct tTVPFoundPlugin
 	bool operator < (const tTVPFoundPlugin &rhs) const { return Name < rhs.Name; }
 };
 static tjs_int TVPAutoLoadPluginCount = 0;
-static void TVPSearchPluginsAt(std::vector<tTVPFoundPlugin> &list, tjs_string folder)
+static void TVPSearchPluginsAt(std::vector<tTVPFoundPlugin> &list, const tjs_string &folder)
 {
-	WIN32_FIND_DATA ffd;
-	HANDLE handle = ::FindFirstFile((folder + TJS_W("*.tpm")).c_str(), &ffd);
-	if(handle != INVALID_HANDLE_VALUE)
+	/* Convert tjs_string (UTF-16) to char* for opendir, fixing backslashes */
+	std::string folder_str;
+	for (tjs_char c : folder) {
+		if (c == '\\') c = '/';
+		folder_str += (char)(unsigned char)c;
+	}
+	DIR *dir = opendir(folder_str.c_str());
+	fprintf(stderr, "TVPSearchPluginsAt: '%s' dir=%p\n", folder_str.c_str(), dir);
+	if (!dir) return;
+	struct dirent *ent;
+	while ((ent = readdir(dir)) != NULL)
 	{
-		BOOL cont;
-		do
+		tjs_string name;
+		for (const char *p = ent->d_name; *p; p++)
+			name += (tjs_char)(unsigned char)*p;
+		if (name.length() >= 4)
 		{
-			if(!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			tjs_string ext = name.substr(name.length() - 4);
+			if (ext == TJS_W(".tpm") || ext == TJS_W(".TPM") || ext == TJS_W(".Tpm"))
 			{
 				tTVPFoundPlugin fp;
 				fp.Path = folder;
-				fp.Name = ffd.cFileName;
+				fp.Name = name;
 				list.push_back(fp);
 			}
-			cont = FindNextFile(handle, &ffd);
-		} while(cont);
-		FindClose(handle);
+		}
 	}
+	closedir(dir);
 }
-#endif
-
 void TVPLoadPluigins(void)
 {
-#if 0
-	// This function searches plugins which have an extension of ".tpm"
-	// in the default path:
-	//    1. a folder which holds kirikiri executable
-	//    2. "plugin" folder of it
-	// Plugin load order is to be decided using its name;
-	// aaa.tpm is to be loaded before aab.tpm (sorted by ASCII order)
-
-	// search plugins from path: (exepath), (exepath)\system, (exepath)\plugin
 	std::vector<tTVPFoundPlugin> list;
-
 	tjs_string exepath = IncludeTrailingBackslash(ExtractFileDir(ExePath()));
-
+	/* Fix Windows-style backslashes to forward slashes for Linux */
+	std::replace(exepath.begin(), exepath.end(), '\\', '/');
+	fprintf(stderr, "TVPLoadPluigins: exepath len=%d\n", (int)exepath.length());
 	TVPSearchPluginsAt(list, exepath);
-	TVPSearchPluginsAt(list, exepath + TJS_W("system\\"));
-#ifdef TJS_64BIT_OS
-	TVPSearchPluginsAt(list, exepath + TJS_W("plugin64\\"));
-#else
-	TVPSearchPluginsAt(list, exepath + TJS_W("plugin\\"));
-#endif
-
-	// sort by filename
+	TVPSearchPluginsAt(list, exepath + TJS_W("system/"));
+	TVPSearchPluginsAt(list, exepath + TJS_W("plugin/"));
 	std::sort(list.begin(), list.end());
-
-	// load each plugin
 	TVPAutoLoadPluginCount = (tjs_int)list.size();
-	for(std::vector<tTVPFoundPlugin>::iterator i = list.begin();
-		i != list.end();
-		i++)
+	for (auto i = list.begin(); i != list.end(); i++)
 	{
 		TVPAddImportantLog(ttstr(TJS_W("(info) Loading ")) + ttstr(i->Name));
 		TVPLoadPlugin(i->Path + i->Name);
 	}
-#endif
 }
 //---------------------------------------------------------------------------
-#if 0
 tjs_int TVPGetAutoLoadPluginCount() { return TVPAutoLoadPluginCount; }
-#else
-tjs_int TVPGetAutoLoadPluginCount() { return 0; }
-#endif
 //---------------------------------------------------------------------------
 
 

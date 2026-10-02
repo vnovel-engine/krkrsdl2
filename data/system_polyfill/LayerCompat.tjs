@@ -1,0 +1,26 @@
+﻿// LayerCompat.tjs — obsolete Layer methods removed in KiriKiriZ.
+// (cf. krkrz/docs/TJS2/deleted.md) Re-expressed via current primitives.
+Layer.affineBlend = function(src, sleft, stop, swidth, sheight, affine, A, B, C, D, E, F, opa, type) {
+	this.operateAffine(src, sleft, stop, swidth, sheight, affine, A, B, C, D, E, F, omOpaque, opa, type);
+};
+Layer.affinePile = function(src, sleft, stop, swidth, sheight, affine, A, B, C, D, E, F, opa, type) {
+	this.operateAffine(src, sleft, stop, swidth, sheight, affine, A, B, C, D, E, F, omAuto, opa, type);
+};
+Layer.blendRect = function(dleft, dtop, src, sleft, stop, swidth, sheight, opa) {
+	this.operateRect(dleft, dtop, src, sleft, stop, swidth, sheight, omOpaque, opa);
+};
+Layer.pileRect = function(dleft, dtop, src, sleft, stop, swidth, sheight, opa) {
+	this.operateRect(dleft, dtop, src, sleft, stop, swidth, sheight, omAuto, opa);
+};
+Layer.stretchBlend = function(dleft, dtop, dwidth, dheight, src, sleft, stop, swidth, sheight, opa, type) {
+	this.operateStretch(dleft, dtop, dwidth, dheight, src, sleft, stop, swidth, sheight, omOpaque, opa, type);
+};
+Layer.stretchPile = function(dleft, dtop, dwidth, dheight, src, sleft, stop, swidth, sheight, opa, type) {
+	this.operateStretch(dleft, dtop, dwidth, dheight, src, sleft, stop, swidth, sheight, omAlpha, opa, type);
+};
+
+function Stretch(arg) {
+	arg.dest.operateStretch(arg.dleft, arg.dtop, arg.dwidth, arg.dheight, arg.src,
+		arg.sleft, arg.stop, arg.swidth, arg.sheight, omAlpha,
+		arg.opa !== void ? arg.opa : 255, 0);
+}

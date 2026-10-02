@@ -64,6 +64,10 @@ extern void TVPLoadMessage();
 
 class TVPWindowWindow;
 static TVPWindowWindow *_lastWindowWindow, *_currentWindowWindow;
+#ifdef KRKRSDL2_LIBRETRO
+extern "C" void *SDL_libretro_surface = NULL;
+extern "C" int SDL_libretro_surface_updated = 0;
+#endif
 static SDL_GameController **sdl_controllers = nullptr;
 static int sdl_controller_num = 0;
 
@@ -821,11 +825,25 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 #endif
 	{
 #if !defined(__EMSCRIPTEN__) || (defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+#ifdef KRKRSDL2_LIBRETRO
+		/* In libretro mode, skip renderer creation and use surface path.
+		 * retro_run reads surface->pixels and sends to video_cb. */
+		const char *libretro_mode = getenv("KRKRSDL2_LIBRETRO");
+		if (!libretro_mode || !atoi(libretro_mode))
+		{
+			this->renderer = SDL_CreateRenderer(this->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+			if (!this->renderer)
+			{
+				TVPAddLog(ttstr("Cannot create SDL renderer: ") + ttstr(SDL_GetError()));
+			}
+		}
+#else
 		this->renderer = SDL_CreateRenderer(this->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 		if (!this->renderer)
 		{
 			TVPAddLog(ttstr("Cannot create SDL renderer: ") + ttstr(SDL_GetError()));
 		}
+#endif
 #endif
 
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
@@ -838,6 +856,9 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 		if (!this->renderer)
 		{
 			this->surface = SDL_GetWindowSurface(this->window);
+			#ifdef KRKRSDL2_LIBRETRO
+			SDL_libretro_surface = (void*)this->surface;
+			#endif
 			if (!this->surface)
 			{
 				TVPAddLog(ttstr("Cannot get surface from SDL window: ") + ttstr(SDL_GetError()));
@@ -938,7 +959,7 @@ void TVPWindowWindow::SetPaintBoxSize(tjs_int w, tjs_int h)
 			SDL_DestroyTexture(this->texture);
 			this->texture = nullptr;
 		}
-		this->texture = SDL_CreateTexture(this->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, w, h);
+		this->texture = SDL_CreateTexture(this->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
 		if (!this->texture)
 		{
 			TVPThrowExceptionMessage(TJS_W("Cannot create texture texture: %1"), ttstr(SDL_GetError()));
@@ -949,7 +970,7 @@ void TVPWindowWindow::SetPaintBoxSize(tjs_int w, tjs_int h)
 			SDL_FreeSurface(this->surface);
 			this->surface = nullptr;
 		}
-		this->surface = SDL_CreateRGBSurface(0, w, h, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0);
+		this->surface = SDL_CreateRGBSurface(0, w, h, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
 		if (!this->surface)
 		{
 			TVPThrowExceptionMessage(TJS_W("Cannot create surface: %1"), ttstr(SDL_GetError()));
@@ -1673,6 +1694,8 @@ void TVPWindowWindow::Swap()
 #endif
 void TVPWindowWindow::Show()
 {
+	if (this->window)
+		SDL_ShowWindow(this->window);
 }
 void TVPWindowWindow::TickBeat()
 {
@@ -1681,7 +1704,11 @@ void TVPWindowWindow::TickBeat()
 		this->visibilityHasInitialized = true;
 		this->SetVisible(this->isVisible);
 	}
-	if (this->needsGraphicUpdate)
+	if (this->needsGraphicUpdate
+#ifdef KRKRSDL2_LIBRETRO
+		|| getenv("KRKRSDL2_LIBRETRO")
+#endif
+	)
 	{
 		if (this->bitmapCompletion)
 		{
@@ -1756,6 +1783,10 @@ void TVPWindowWindow::TickBeat()
 			else if (this->window && this->surface)
 			{
 				SDL_UpdateWindowSurfaceRects(this->window, &rect, 1);
+				#ifdef KRKRSDL2_LIBRETRO
+				SDL_libretro_surface = (void*)this->surface;
+				SDL_libretro_surface_updated = 1;
+				#endif
 				this->hasDrawn = true;
 			}
 			this->needsGraphicUpdate = false;
@@ -3159,7 +3190,38 @@ TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state)
 	return result;
 }
 
-void TVPGetAllFontList(std::vector<tjs_string>& list) {}
+// System font loading: scan font directories and register with FreeType
+extern void TVPAddSystemFontToFreeType(const std::string& storage, std::vector<tjs_string>* faces);
+static bool krkr_system_fonts_loaded = false;
+static void TVPLoadSystemFonts() {
+	if (krkr_system_fonts_loaded) return;
+	krkr_system_fonts_loaded = true;
+	const char* dirs[] = {
+		"/usr/share/fonts", "/usr/local/share/fonts",
+		getenv("HOME") ? (std::string(getenv("HOME")) + "/.fonts").c_str() : nullptr,
+		getenv("HOME") ? (std::string(getenv("HOME")) + "/.local/share/fonts").c_str() : nullptr,
+		nullptr
+	};
+	for (int d = 0; dirs[d]; d++) {
+		std::string cmd = "find \"";
+		cmd += dirs[d];
+		cmd += "\" -name '*.ttf' -o -name '*.ttc' -o -name '*.otf' 2>/dev/null";
+		FILE* fp = popen(cmd.c_str(), "r");
+		if (!fp) continue;
+		char line[4096];
+		while (fgets(line, sizeof(line), fp)) {
+			size_t len = strlen(line);
+			if (len > 0 && line[len-1] == '\n') line[--len] = '\0';
+			if (len > 0) {
+				try { TVPAddSystemFontToFreeType(std::string(line), nullptr); } catch(...) {}
+			}
+		}
+		pclose(fp);
+	}
+}
+void TVPGetAllFontList(std::vector<tjs_string>& list) {
+	TVPLoadSystemFonts();
+}
 
 const tjs_char *TVPGetDefaultFontName()
 {

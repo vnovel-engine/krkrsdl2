@@ -1,0 +1,3 @@
+﻿// Util.tjs — small file/system utilities the engine lacks natively.
+function GetFileSize(name) { return -1; }
+function DeleteFile(name) {}

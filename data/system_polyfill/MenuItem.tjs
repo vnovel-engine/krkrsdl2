@@ -1,0 +1,27 @@
+﻿// MenuItem.tjs — stub for platforms without native window menus.
+// On Windows MenuItem/Menu are native classes; here they are pure script.
+class MenuItem {
+	function MenuItem(parent, cap) { caption = cap; }
+	function add(item) { return item; }
+	function remove(item) {}
+	function clear() {}
+	function check(c) { checked = c; }
+	function enable(e) { enabled = e; }
+	var caption = "";
+	var checked = false;
+	var enabled = true;
+	var visible = true;
+	var group = 0;
+	var radio = false;
+	var children = [];
+}
+
+class Menu {
+	function Menu(parent) {}
+	function add(item) { return item; }
+	function clear() {}
+	function popup(x, y) {}
+	var children = [];
+}
+
+global.menu = new Menu(null);

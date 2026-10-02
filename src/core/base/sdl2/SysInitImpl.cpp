@@ -969,7 +969,18 @@ void TVPBeforeSystemInit()
 
 	TVPInitProgramArgumentsAndDataPath(false); // ensure command line
 
-#if 0
+	// Auto-discover data.xp3 in ExePath() directory
+	if (!TVPProjectDirSelected) {
+		tjs_string dir = IncludeTrailingBackslash(ExtractFileDir(ExePath()));
+		tjs_string xp3 = dir + TJS_W("data.xp3");
+		std::string xp3_utf8;
+		if (TVPUtf16ToUtf8(xp3_utf8, xp3) && access(xp3_utf8.c_str(), F_OK) == 0) {
+			TVPProjectDir = TVPNormalizeStorageName(xp3 + TJS_W(">"));
+			TVPSetCurrentDirectory(TVPProjectDir);
+			TVPNativeProjectDir = xp3;
+			TVPProjectDirSelected = true;
+		}
+	}
 	{	// CPU core limitation
 		bool cpuCoreLimit = true;
 		tTJSVariant opt;
@@ -995,9 +1006,9 @@ void TVPBeforeSystemInit()
 				::CloseHandle( hProc );
 			}
 #else
+			/* Win32-only process affinity — disabled for SDL2
 			if( numCore > 31 )
 			{
-				//DWORD mask = (0x01 << numCore) - 1;	// for debug.
 				HANDLE hProc = ::OpenProcess( PROCESS_ALL_ACCESS, FALSE, ::GetCurrentProcessId() );
 				BOOL success = ::SetProcessAffinityMask( hProc, 0x7fffffffUL );
 				if( success == FALSE ) {
@@ -1005,6 +1016,7 @@ void TVPBeforeSystemInit()
 				}
 				::CloseHandle( hProc );
 			}
+			*/
 #endif
 		}
 	}
@@ -1013,13 +1025,11 @@ void TVPBeforeSystemInit()
 		// register hook function for hardware exceptions
 #endif
 
-	Application->SetHintHidePause( 24*60*60*1000 );
-		// not to hide tool tip hint immediately
-	Application->SetShowHint( false );
-	Application->SetShowHint( true );
-		// to ensure assigning new HintWindow Class defined in HintWindow.cpp
+	//Application->SetHintHidePause( 24*60*60*1000 ); // Win32 only
+	//Application->SetShowHint( false ); // Win32 only
+	//Application->SetShowHint( true ); // Win32 only
 
-#endif
+//#endif // stray from original #if 0
 
 	// randomize
 	TVPInitRandomGenerator();

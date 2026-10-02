@@ -23,6 +23,7 @@ external/krkrz/sound/SoundDecodeThread.cpp
 external/krkrz/sound/SoundEventThread.cpp
 external/krkrz/sound/SoundPlayer.cpp
 external/krkrz/sound/WaveFormatConverter.cpp
+external/krkrz/sound/VorbisCodecDecoder.cpp
 external/krkrz/sound/WaveIntf.cpp
 external/krkrz/sound/WaveLoopManager.cpp
 external/krkrz/sound/WaveSegmentQueue.cpp

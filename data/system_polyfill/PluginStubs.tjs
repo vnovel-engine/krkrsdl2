@@ -1,0 +1,25 @@
+﻿// PluginStubs.tjs — shims for KiriKiri Z plugins that games link unguarded
+// (fpslimit.dll, addFont.dll, fstat.dll, krkrsteam.dll, extrans.dll ...).
+// The engine supplies the useful behaviour itself; these keep scripts that
+// expect the native surface working.
+
+// krkrsteam.dll is absent off-Steam: expose a void Steam so games that check
+// `Steam !== void` skip the Steam paths.
+try { if(Steam === void) {} } catch(e) { global.Steam = void; }
+
+if(typeof System != 'undefined') {
+	System.fpslimit = 0;					// fpslimit.dll: 0 = uncapped
+	System.addFont = function(fn) { try { Font.addFont(fn); } catch(e) {} };	// addFont.dll
+	System.getFileTime = function(fn) { return -1; };							// fstat.dll
+}
+
+// fstat.dll
+function FileTime(fn) { return -1; }
+
+// extrans.dll montage/effect classes. Minimal no-op equivalents so scenarios
+// that construct them do not raise.
+class Quake      { function Quake() {}      function start() {} function stop() {} function finalize() {} }
+class Rain       { function Rain() {}       function start() {} function stop() {} function finalize() {} }
+class Zoom       { function Zoom() {}       function start() {} function stop() {} function finalize() {} }
+class MotionBlur { function MotionBlur() {} function start() {} function stop() {} function finalize() {} }
+class FallenLeaf { function FallenLeaf() {} function start() {} function stop() {} function finalize() {} }

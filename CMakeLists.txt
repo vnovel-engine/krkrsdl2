@@ -172,8 +172,8 @@ list(APPEND KRKRSDL2_DEFINITIONS
 	HAVE_CONFIG_H
 	FT2_BUILD_LIBRARY
 	USE_ALLOCA
-	OPUS_BUILD
-	HAVE_LRINTF
+	TVP_TEXT_READ_ANSI_MBCS
+	USE_OBSOLETE_FUNCTIONS
 	HAVE_LRINT
 	FLOAT_APPROX
 	PNG_ARM_NEON_OPT=0
@@ -271,6 +271,25 @@ list(APPEND KRKRSDL2_CFLAGS
 list(APPEND KRKRSDL2_LIBS
 	pthread
 )
+endif()
+
+# Ogg Vorbis decoding (wuvorbis.dll equivalent) via the system libvorbisfile.
+# Enabled only when the library is available; VorbisCodecDecoder.cpp compiles
+# to nothing otherwise and TVPCreateWaveDecoder simply won't offer .ogg.
+if(NOT (${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten"))
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+pkg_check_modules(VORBISFILE QUIET IMPORTED_TARGET vorbisfile)
+if(VORBISFILE_FOUND)
+list(APPEND KRKRSDL2_LIBS
+	PkgConfig::VORBISFILE
+)
+list(APPEND KRKRSDL2_DEFINITIONS
+	TVP_VORBIS_DECODER_IMPLEMENT
+)
+message(STATUS "krkrsdl2: Ogg Vorbis decoder enabled (libvorbisfile ${VORBISFILE_VERSION})")
+endif()
+endif()
 endif()
 
 if(KRKRSDL2_BUILD_ENABLE_WARNINGS)
@@ -486,26 +505,14 @@ list(APPEND KRKRSDL2_DEFINITIONS
 get_target_property(SDL2_INCLUDE_DIRS SDL2-static INCLUDE_DIRECTORIES)
 set(SDL2_LIBRARIES SDL2-static)
 elseif((APPLE AND NOT IOS) OR (${CMAKE_SYSTEM_NAME} STREQUAL "Linux"))
-set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/SDL)
-find_library(SDL2 NAMES SDL2-static)
-list(APPEND KRKRSDL2_LIBS
-	SDL2-static
-)
-get_target_property(SDL2_INCLUDE_DIRS SDL2-static INCLUDE_DIRECTORIES)
-set(SDL2_LIBRARIES SDL2-static)
-elseif(ANDROID)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+list(APPEND KRKRSDL2_LIBS PkgConfig::SDL2)
+set(SDL2_INCLUDE_DIRS ${SDL2_INCLUDE_DIRS})
+set(SDL2_LIBRARIES ${SDL2_LIBRARIES})
 set(SDL_SHARED_ENABLED_BY_DEFAULT ON)
 set(SDL_STATIC_ENABLED_BY_DEFAULT OFF)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/SDL)
-find_library(SDL2 NAMES SDL2 SDL2main)
-list(APPEND KRKRSDL2_LIBS
-	SDL2
-	SDL2main
-)
-list(APPEND KRKRSDL2_DEFINITIONS
-	USE_SDL_MAIN
-)
+
 elseif(WIN32)
 set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
 set(SDL_SHARED OFF)
@@ -557,12 +564,14 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Intentionally disabled for FAudio: Build s
 set(_DISABLE_INSTALLATION_OLD ${_DISABLE_INSTALLATION})
 set(_DISABLE_INSTALLATION TRUE)
 add_subdirectory(external/FAudio)
-set(_DISABLE_INSTALLATION ${_DISABLE_INSTALLATION_OLD})
+set_target_properties(FAudio PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+target_compile_definitions(FAudio PRIVATE KRKRSDL2_LIBRETRO)
 list(APPEND KRKRSDL2_LIBS
 	FAudio
 )
 list(APPEND KRKRSDL2_DEFINITIONS
 	TVP_FAUDIO_IMPLEMENT
+	KRKRSDL2_LIBRETRO
 )
 endif()
 
@@ -612,7 +621,8 @@ if(ANDROID)
 add_library(${KRKRSDL2_NAME} SHARED)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "main")
 else()
-add_executable(${KRKRSDL2_NAME})
+add_library(${KRKRSDL2_NAME} SHARED)
+set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "krkrsdl2")
 if(WIN32)
 if("${CMAKE_SIZEOF_VOID_P}" STREQUAL "8")
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "tvpwin64")
@@ -629,9 +639,7 @@ endif()
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES C_STANDARD 11)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES CXX_STANDARD 14)
 target_sources(${KRKRSDL2_NAME} PRIVATE ${KRKRSDL2_SRC})
-target_compile_definitions(${KRKRSDL2_NAME} PUBLIC ${KRKRSDL2_DEFINITIONS})
-target_compile_options(${KRKRSDL2_NAME} PUBLIC $<$<COMPILE_LANGUAGE:C>:${KRKRSDL2_CFLAGS}>)
-target_compile_options(${KRKRSDL2_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:${KRKRSDL2_CXXFLAGS}>)
+set_target_properties(${KRKRSDL2_NAME} PROPERTIES ENABLE_EXPORTS ON)
 target_include_directories(${KRKRSDL2_NAME} PUBLIC ${KRKRSDL2_INCLUDES})
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.13.0")
 target_link_options(${KRKRSDL2_NAME} PUBLIC ${KRKRSDL2_LDFLAGS})

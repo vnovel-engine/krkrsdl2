@@ -177,18 +177,16 @@ public:
 	void SetTitle( const tjs_string& caption );
 
 	static inline int MessageDlg( const tjs_string& string, const tjs_string& caption, int type, int button ) {
-#if 0
-		return ::MessageBox( nullptr, string.c_str(), caption.c_str(), type|button  );
-#endif
 		tjs_string s_utf16 = string;
 		std::string s_utf8;
 		tjs_string c_utf16 = caption;
 		std::string c_utf8;
 		if (TVPUtf16ToUtf8(s_utf8, s_utf16) && TVPUtf16ToUtf8(c_utf8, c_utf16))
 		{
-			return SDL_ShowSimpleMessageBox(type, c_utf8.c_str(), s_utf8.c_str(), nullptr);
+			fprintf(stderr, "[%s] %s\n", c_utf8.c_str(), s_utf8.c_str());
+			fflush(stderr);
 		}
-		return 0;
+		return 1;
 	}
 	void Terminate();
 #if 0
