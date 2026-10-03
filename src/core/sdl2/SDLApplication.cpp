@@ -95,6 +95,11 @@ extern "C" volatile int krkrsdl2_engine_stopped = 0;
  * checks this and outputs silence without running the FAudio engine, so a pause
  * also quiets and idles the audio path. */
 extern "C" volatile int krkrsdl2_paused = 0;
+/* Set by the core wrapper when the frontend asked to quit (retro_unload_game /
+ * user exit). The engine's main loop must honour it even while paused/idle:
+ * otherwise the loop keeps returning in the pause gate, never reaches the
+ * terminate check, and the core's pthread_join blocks forever. */
+extern "C" volatile int krkrsdl2_quit_requested = 0;
 #define KRKR_FF_TIME_SCALE 16
 #endif
 static SDL_GameController **sdl_controllers = nullptr;
@@ -3214,10 +3219,16 @@ static bool process_events()
 	 * pacing, one-frame hiccups) yet trip quickly on a real pause. */
 #ifdef KRKRSDL2_LIBRETRO
 	{
+		/* Frontend asked to quit: terminate immediately, even if paused. */
+		if (krkrsdl2_quit_requested)
+		{
+			::Application->Terminate();
+		}
 		struct timespec hb_now;
 		clock_gettime(CLOCK_MONOTONIC, &hb_now);
 		long long hb_now_ms = (long long)hb_now.tv_sec * 1000 + hb_now.tv_nsec / 1000000;
-		if (krkrsdl2_last_poll_ms != 0 && hb_now_ms - krkrsdl2_last_poll_ms > 250)
+		if (!krkrsdl2_quit_requested &&
+		    krkrsdl2_last_poll_ms != 0 && hb_now_ms - krkrsdl2_last_poll_ms > 250)
 		{
 			krkrsdl2_paused = 1;
 			struct timespec ps = {0, 5 * 1000 * 1000};

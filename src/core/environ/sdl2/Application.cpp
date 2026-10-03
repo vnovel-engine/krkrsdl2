@@ -811,7 +811,15 @@ void tTVPApplication::Run() {
 		if (SDL_WasInit(SDL_INIT_EVENTS) != 0)
 		{
 #ifndef __EMSCRIPTEN__
+#ifdef KRKRSDL2_LIBRETRO
+			/* Under libretro the engine loop must never block in SDL_WaitEvent:
+			 * the core injects events from another thread and needs the loop to
+			 * keep turning so it can observe a quit request. Sleep one frame
+			 * instead (the client loop paces itself). */
+			SDL_Delay(1);
+#else
 			SDL_WaitEvent(NULL);
+#endif
 #endif
 		}
 	}
