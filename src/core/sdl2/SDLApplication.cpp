@@ -1831,20 +1831,30 @@ void TVPWindowWindow::PublishLibretroSurface()
 	static int shadow_w = 0, shadow_h = 0;
 	if (!shadow || shadow_w != primary->surface->w || shadow_h != primary->surface->h)
 	{
-		if (shadow)
-		{
-			SDL_FreeSurface(shadow);
-		}
-		shadow = SDL_CreateRGBSurface(0, primary->surface->w, primary->surface->h, 32,
+		/* Build the replacement *before* retiring the old one, and keep
+		 * SDL_libretro_surface pointing at a live surface throughout: the
+		 * libretro core reads that global (and the surface's w/h/pixels)
+		 * from another thread each frame, so freeing the old surface while
+		 * the global still referenced it caused a use-after-free (visible
+		 * as wildly invalid geometry). */
+		SDL_Surface *new_shadow = SDL_CreateRGBSurface(0, primary->surface->w, primary->surface->h, 32,
 			0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
-		if (!shadow)
+		if (!new_shadow)
 		{
 			SDL_libretro_surface = (void*)primary->surface;
 			SDL_libretro_surface_updated = 1;
 			return;
 		}
+		SDL_Surface *old_shadow = shadow;
+		shadow = new_shadow;
 		shadow_w = primary->surface->w;
 		shadow_h = primary->surface->h;
+		SDL_libretro_surface = (void*)shadow;
+		SDL_libretro_surface_updated = 1;
+		if (old_shadow)
+		{
+			SDL_FreeSurface(old_shadow);
+		}
 	}
 
 	SDL_LockSurface(primary->surface);
