@@ -67,6 +67,35 @@ static TVPWindowWindow *_lastWindowWindow, *_currentWindowWindow;
 #ifdef KRKRSDL2_LIBRETRO
 extern "C" void *SDL_libretro_surface = NULL;
 extern "C" int SDL_libretro_surface_updated = 0;
+/* libretro fast-forward. Set from the core wrapper (krkr_set_fastforward):
+ * skips the engine's own frame limiter so it runs unthrottled. Pause is
+ * handled separately via the poll heartbeat (krkr_notify_poll). */
+extern "C" volatile int krkrsdl2_fastforward = 0;
+/* Heartbeat: the core wrapper stamps this via krkr_notify_poll() on every
+ * retro_run(). When the frontend pauses (RetroArch stops calling retro_run
+ * entirely — it has no core-visible pause callback), the stamp goes stale and
+ * the engine idles. 0 = core has not polled yet (run normally). */
+extern "C" volatile long long krkrsdl2_last_poll_ms = 0;
+/* Fast-forward time dilation. TVPGetRoughTickCount32() (see
+ * krkrz/utils/TickCount.cpp) adds this bias to the real tick, so script/video
+ * timers run KRKR_FF_TIME_SCALE x faster while fast-forwarding. Advanced from
+ * real elapsed time, so it is independent of how fast the loop iterates. */
+extern "C" volatile long long krkrsdl2_tick_extra_ms = 0;
+/* Game's auto/skip state, mirrored from TJS `kag.tflags.autoMode`
+ * (0 = off, 1 = skip, 2 = auto-read) so the core can show its mode indicator.
+ * Updated on the engine thread (TJS is not thread-safe); see process_events. */
+extern "C" volatile int krkrsdl2_auto_mode = 0;
+/* Set when the game itself terminates (KAG `[close]` -> window close ->
+ * TVPTerminateAsync -> IsTarminate). The engine blanks the framebuffer before
+ * the loop unwinds, so the core can show an empty screen and stay parked
+ * instead of the frontend quitting. */
+extern "C" volatile int krkrsdl2_engine_stopped = 0;
+/* Set while the frontend has stopped polling (pause heartbeat stale, e.g. the
+ * RetroArch menu is open, or the window is not active). The SDL audio thread
+ * checks this and outputs silence without running the FAudio engine, so a pause
+ * also quiets and idles the audio path. */
+extern "C" volatile int krkrsdl2_paused = 0;
+#define KRKR_FF_TIME_SCALE 16
 #endif
 static SDL_GameController **sdl_controllers = nullptr;
 static int sdl_controller_num = 0;
@@ -788,6 +817,17 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 #endif
 #ifdef SDL_HINT_MOUSE_TOUCH_EVENTS
 	SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+#endif
+
+#ifdef KRKRSDL2_LIBRETRO
+	/* The core dlopens this engine into the *frontend's* process, and we
+	 * share its SDL2 (RTLD_DEEPBIND still resolves libSDL2-2.0.so.0 to the
+	 * already-loaded one). The engine creates a hidden "dummy"-driver window
+	 * whose destruction (on the game's KAG `[close]`) would make SDL2 >=
+	 * 2.0.22 post SDL_QUIT with SDL_QUIT_ON_LAST_WINDOW_CLOSE=1 — that
+	 * SDL_QUIT lands in RetroArch's own event loop and quits the frontend.
+	 * Keep the hint at 0 so a game-side exit does not kill RetroArch. */
+	SDL_SetHintWithPriority(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0", SDL_HINT_OVERRIDE);
 #endif
 
 #ifdef KRKRSDL2_WINDOW_SIZE_IS_LAYER_SIZE
@@ -3143,12 +3183,35 @@ static void process_events()
 static bool process_events()
 #endif
 {
+#ifndef __EMSCRIPTEN__
+	/* libretro pause: RetroArch stops calling retro_run() while paused and has
+	 * no core-visible pause callback, so the frontend's poll heartbeat goes
+	 * stale. Idle the loop then (no Run(), no drawing) — this also stops the
+	 * engine's audio production, so silence follows without touching FAudio.
+	 * The threshold must exceed any plausible per-frame stall (retro_run's own
+	 * pacing, one-frame hiccups) yet trip quickly on a real pause. */
+#ifdef KRKRSDL2_LIBRETRO
+	{
+		struct timespec hb_now;
+		clock_gettime(CLOCK_MONOTONIC, &hb_now);
+		long long hb_now_ms = (long long)hb_now.tv_sec * 1000 + hb_now.tv_nsec / 1000000;
+		if (krkrsdl2_last_poll_ms != 0 && hb_now_ms - krkrsdl2_last_poll_ms > 250)
+		{
+			krkrsdl2_paused = 1;
+			struct timespec ps = {0, 5 * 1000 * 1000};
+			nanosleep(&ps, NULL);
+			return true; /* keep the loop alive but idle */
+		}
+		krkrsdl2_paused = 0;
+	}
+#endif
+
 	/* Frame limiter. The engine main loop has no pacing of its own, and the
 	 * fpslimit plugin (which sets System.fpslimit) is a no-op stub, so while
 	 * anything is animating the loop re-runs as fast as the CPU allows and
 	 * pegs a core. Sleep off the remainder of the frame budget after each
-	 * iteration. Rate: KRKRSDL2_FPS (default 60); 0 disables the limit. */
-#ifndef __EMSCRIPTEN__
+	 * iteration. Rate: KRKRSDL2_FPS (default 60); 0 disables the limit.
+	 * libretro fast-forward: skip the sleep so the engine runs unthrottled. */
 	static double s_frame_budget = -1.0;
 	static struct timespec s_last_tick = {0, 0};
 	if (s_frame_budget < 0.0)
@@ -3157,15 +3220,20 @@ static bool process_events()
 		int fps = e ? atoi(e) : 60;
 		s_frame_budget = fps > 0 ? 1.0 / (double)fps : 0.0;
 	}
-	if (s_frame_budget > 0.0 && s_last_tick.tv_sec != 0)
+#ifdef KRKRSDL2_LIBRETRO
+	double budget = krkrsdl2_fastforward ? 0.0 : s_frame_budget;
+#else
+	double budget = s_frame_budget;
+#endif
+	if (budget > 0.0 && s_last_tick.tv_sec != 0)
 	{
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		double dt = (now.tv_sec - s_last_tick.tv_sec)
 			+ (now.tv_nsec - s_last_tick.tv_nsec) / 1e9;
-		if (dt < s_frame_budget)
+		if (dt < budget)
 		{
-			double wait = s_frame_budget - dt;
+			double wait = budget - dt;
 			struct timespec rem;
 			rem.tv_sec  = (time_t)wait;
 			rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
@@ -3173,7 +3241,47 @@ static bool process_events()
 		}
 	}
 	clock_gettime(CLOCK_MONOTONIC, &s_last_tick);
+
+#ifdef KRKRSDL2_LIBRETRO
+	/* Fast-forward time dilation: advance the virtual clock bias by the real
+	 * time elapsed x (scale-1), so script/video timers run `scale` x faster
+	 * without depending on how fast this loop iterates. The bias is read by
+	 * TVPGetRoughTickCount32() (krkrz/utils/TickCount.cpp). */
+	{
+		static struct timespec s_vt_last = {0, 0};
+		struct timespec vt_now;
+		clock_gettime(CLOCK_MONOTONIC, &vt_now);
+		if (s_vt_last.tv_sec != 0 && krkrsdl2_fastforward)
+		{
+			double edt = (vt_now.tv_sec - s_vt_last.tv_sec)
+				+ (vt_now.tv_nsec - s_vt_last.tv_nsec) / 1e9;
+			if (edt > 0.0 && edt < 0.5)
+				krkrsdl2_tick_extra_ms += (long long)(edt * (KRKR_FF_TIME_SCALE - 1) * 1000.0);
+		}
+		s_vt_last = vt_now;
+	}
+#endif
 #endif /* !__EMSCRIPTEN__ */
+
+#ifdef KRKRSDL2_LIBRETRO
+	/* Mirror the game's auto/skip state (TJS `kag.tflags.autoMode`) so the
+	 * core can render its mode indicator. Evaluated here (engine thread) at
+	 * ~5 Hz: TJS is not thread-safe, so the core must not read it directly. */
+	{
+		static int s_am_countdown = 0;
+		if (--s_am_countdown <= 0)
+		{
+			s_am_countdown = 12; /* ~5 Hz at 60 fps */
+			try
+			{
+				tTJSVariant v;
+				TVPExecuteExpression(TJS_W("kag.tflags.autoMode"), &v);
+				krkrsdl2_auto_mode = (int)v;
+			}
+			catch (...) { /* kag not ready yet / not a KAG game */ }
+		}
+	}
+#endif
 
 	try
 	{
@@ -3186,6 +3294,18 @@ static bool process_events()
 			::Application->Run();
 			if (::Application->IsTarminate())
 			{
+#ifdef KRKRSDL2_LIBRETRO
+				/* The game closed itself (KAG `[close]`). Blank the published
+				 * surface so the core shows an empty screen, and flag it so
+				 * the core parks permanently (does not quit the frontend). */
+				if (SDL_libretro_surface)
+				{
+					SDL_Surface *s = (SDL_Surface*)SDL_libretro_surface;
+					if (s->pixels && s->h > 0 && s->pitch > 0)
+						memset(s->pixels, 0, (size_t)s->pitch * (size_t)s->h);
+				}
+				krkrsdl2_engine_stopped = 1;
+#endif
 				TVPSystemUninit();
 				if (TVPSystemControl)
 				{
@@ -3307,6 +3427,21 @@ void krkrsdl2_run_main_loop(void)
 	while (process_events());
 #endif
 }
+
+/* libretro control entry points (called via dlsym from the core wrapper). */
+#ifdef KRKRSDL2_LIBRETRO
+extern "C" void krkr_set_fastforward(int f)
+{
+	krkrsdl2_fastforward = f;
+}
+
+/* Frontend poll heartbeat: ms = CLOCK_MONOTONIC milliseconds, stamped by the
+ * core wrapper once per retro_run(). A stale value means the frontend paused. */
+extern "C" void krkr_notify_poll(long long ms)
+{
+	krkrsdl2_last_poll_ms = ms;
+}
+#endif
 
 void krkrsdl2_cleanup(void)
 {
