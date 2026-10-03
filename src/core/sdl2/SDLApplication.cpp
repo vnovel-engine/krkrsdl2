@@ -118,6 +118,18 @@ static void refresh_controllers()
 		return;
 	}
 #endif
+#ifdef KRKRSDL2_LIBRETRO
+	/* libretro mode: the frontend supplies all input through the core shim
+	 * (engine_kirikiri_cabi.cpp), which maps RetroPad buttons to VK keys.
+	 * RetroArch can only apply its own remapping to pad input it owns; if the
+	 * engine also opens the controller natively, SDL delivers
+	 * SDL_CONTROLLERBUTTONDOWN and the same press fires twice (once via the
+	 * native VK_PAD path, once via the shim's key events) and RetroArch's
+	 * mapping is bypassed entirely. So do not touch the controller subsystem
+	 * in libretro builds: no SDL_Init(GAMECONTROLLER), no SDL_GameControllerOpen. */
+	(void)0;
+	return;
+#endif
 	if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
 	{
 		SDL_Init(SDL_INIT_GAMECONTROLLER);
