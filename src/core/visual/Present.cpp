@@ -135,27 +135,6 @@ extern "C" void TVPSetTextPlaneCallback(tTVPTextPlaneCallback callback, void * h
 	TextPlaneHostData = hostdata;
 }
 
-/* Menu visibility. An edge, not a frame: the script sets MenuItem.visible and
- * this forwards it once. Deliberately NOT gated on anything - a host with no
- * menu simply gets a call it ignores - and no-op when no callback is installed,
- * so a headless run is unaffected. */
-static tTVPMenuVisibleCallback MenuVisibleCallback = NULL;
-static void * MenuVisibleHostData = NULL;
-
-extern "C" void TVPSetMenuVisibleCallback(tTVPMenuVisibleCallback callback, void * hostdata)
-{
-	MenuVisibleCallback = callback;
-	MenuVisibleHostData = hostdata;
-}
-
-/* Called from the platform MenuItem's SetVisible. Reached on the engine thread,
- * from script, so it must not block. */
-extern "C" void TVPNotifyMenuVisible(bool visible)
-{
-	if (MenuVisibleCallback)
-		MenuVisibleCallback(visible, MenuVisibleHostData);
-}
-
 bool TVPIsTextPlaneCallbackSet()
 {
 	return TextPlaneCallback != NULL;

@@ -184,8 +184,18 @@ void TVPSetWaitForPresentCallback(tTVPWaitForPresentCallback callback,
 
 typedef struct tTVPTextPlane
 {
-	/* Pixel data: BGRA, `Pitch` bytes per row, `Height` rows, top-down - the
-	 * same format as the frame, so a host composites the two directly.
+	/* Pixel data: BGRA, `Pitch` bytes per row, `Height` rows.
+	 *
+	 * WHICH ROW `Pixels` POINTS AT DEPENDS ON `Pitch`'s SIGN, and getting this
+	 * wrong reads past the end of the allocation. The engine's bitmaps are
+	 * bottom-up, so `Pitch` is negative and `Pixels` is the LAST row - the rows
+	 * before it live at LOWER addresses. A host must therefore step rows by the
+	 * signed pitch, never copy `|Pitch| * Height` bytes forward from `Pixels`:
+	 * for a 808x48 plane that reads ~155 KB forward from a pointer that is
+	 * already at the end of a 152 KB allocation. (This is exactly the bug the
+	 * core's own copy had, found with a core dump inside memcpy.)
+	 *
+	 * So: for row y, the bytes are `(const unsigned char *)Pixels + y * Pitch`.
 	 *
 	 * Unlike tTVPPresentBuffer::Pixels this stays valid after the callback
 	 * returns: it is the engine's own text surface, and the engine will overwrite
@@ -196,7 +206,8 @@ typedef struct tTVPTextPlane
 	int Width;
 	int Height;
 
-	/* As in tTVPPresentBuffer: never assume Width * 4. */
+	/* Bytes per row, and it KEEPS ITS SIGN - see Pixels above. Never assume
+	 * Width * 4: the engine pads rows. */
 	int Pitch;
 
 	/* The region the engine changed since the previous call, in plane
@@ -237,24 +248,6 @@ typedef bool (*tTVPTextPlaneCallback)(const tTVPTextPlane * plane);
  * separate surface when a host is listening, so an uninstalled callback costs
  * nothing. */
 void TVPSetTextPlaneCallback(tTVPTextPlaneCallback callback, void * hostdata);
-
-/*---------------------------------------------------------------------------*/
-/* Menu visibility
- *
- * The native MenuItem class's `visible` property is the game asking for the
- * menu bar to be shown or hidden - system/Config.tjs ships `menu.visible = true`
- * and that is what it means. Upstream did it by toggling the window's Win32
- * menu bar; this target has no window frame, so the engine forwards the request
- * to the host, which owns the menu it actually draws.
- *
- * Separate from the present callback because it is an *edge* and not a frame:
- * it fires when the script sets the property, at most a few times per scene,
- * where present runs every composite. A host that ignores it loses nothing
- * except the script's ability to hide the menu.
- */
-typedef void (*tTVPMenuVisibleCallback)(bool visible, void * hostdata);
-
-void TVPSetMenuVisibleCallback(tTVPMenuVisibleCallback callback, void * hostdata);
 
 /*---------------------------------------------------------------------------*/
 /* The engine-internal half of this seam lives in PresentIntf.h, which is where

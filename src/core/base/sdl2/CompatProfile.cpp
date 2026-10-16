@@ -340,6 +340,28 @@ static const TVPCompatGameEntry TVPCompatGameTable[] = {
 	 *   data.xp3 size 7960837 crc 64960AF9
 	 * The crc is the same one dat/vnovel.dat carries for this release. */
 	{ "64960AF9", "2.19", "Fate/stay night" },
+
+	/* The House in Fata Morgana (MangaGamer/GOG, English). Its engine reports
+	 * 2.31.2013.411 (the version resource of `fataold.exe`, the engine the
+	 * launcher starts), which is ABOVE every switch in this file: the
+	 * compositing change is 2006-10, classvar 2007-01-20, structconst
+	 * 2008-04-08, and the newest threshold is unaryaster at 2.25 beta 1. So it
+	 * wants this tree's own behaviour, and its era is stated as `modern` rather
+	 * than left empty so that the row still says which era this is even if
+	 * TVP_COMPAT_DEFAULT_LEVEL is ever changed to something else.
+	 *
+	 * Measured, not assumed: run against the Wine reference of the same
+	 * release, both stepped through the same script input, and compared frame
+	 * by frame. The one difference found is not a switch - see the menu bar
+	 * note in the core's own tracking - and no era switch closes it.
+	 *
+	 * Identity from `tools/hash-game.py /mnt/bulk/Software/The House in Fata
+	 * Morgana`:
+	 *   data.xp3 size 394118094 crc 71604817
+	 * The crc covers the whole 394 MB archive, so this id names THIS release;
+	 * another pressing hashes differently and gets the default, which is the
+	 * same set of behaviours this row selects. */
+	{ "71604817", "modern", "The House in Fata Morgana" },
 };
 
 static bool TVPCompatGameIdEqual(const char *a, const char *b)

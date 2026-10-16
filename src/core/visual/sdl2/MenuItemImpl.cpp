@@ -20,9 +20,6 @@
 #include "MenuItemImpl.h"
 #include "Present.h"
 
-/* Defined in Present.cpp. The engine-internal half of the menu-visibility
- * seam; see Present.h for why the engine forwards this rather than acting. */
-extern "C" void TVPNotifyMenuVisible(bool visible);
 #include "MsgIntf.h"
 #include "WindowIntf.h"
 
@@ -211,16 +208,21 @@ void tTJSNI_MenuItem::SetVisible(bool b)
 {
 	/* Upstream, for an item that had a Window, toggled the window's menu BAR
 	 * (SetMenuBarVisible) rather than the item - that is what `menu.visible =
-	 * true` in the game's Config.tjs means: the KAG `menu` object is the window's
-	 * own menu, and hiding it hides the bar. This target has no window frame, so
-	 * there is no bar here to toggle; the request is forwarded to the host
-	 * instead, which owns the menu it actually draws (the core's own menu at the
-	 * present boundary).
+	 * true` in the game's Config.tjs means: the KAG `menu` object is the
+	 * window's own menu, and hiding it hides the bar.
 	 *
-	 * The flag is still kept locally so that reading `visible` back reports what
-	 * was set, which a script may rely on. */
+	 * This target has no window frame, so there is no bar here to toggle. The
+	 * core's own menu is a different thing entirely - an overlay it draws at
+	 * the present boundary, shown when the user's hotkey asks for it - and it
+	 * is deliberately NOT driven from here: a game's window-menu request and
+	 * the host's own menu have nothing to do with each other, and wiring one to
+	 * the other meant the host's menu could only be reached when a game
+	 * happened to ask for a menu bar of its own.
+	 *
+	 * What remains is the item-level meaning, which is real and is what the
+	 * scripts use (`rightClickMenuItem.visible = false` hides that entry): the
+	 * value is kept and read back, so a script that sets it sees what it set. */
 	Visible = b;
-	TVPNotifyMenuVisible(b);
 }
 //---------------------------------------------------------------------------
 bool tTJSNI_MenuItem::GetVisible() const

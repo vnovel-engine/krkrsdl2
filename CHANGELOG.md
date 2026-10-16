@@ -16,6 +16,24 @@ engine. `external/krkrz` and `external/FAudio` are forks in their own right;
 see their `LINEAGE.md`.
 
 
+## Unreleased
+
+### Changed
+
+- `MenuItem.visible` is item-level only and is no longer forwarded to the host
+  (`TVPSetMenuVisibleCallback` is gone, with `TVPNotifyMenuVisible`). Upstream's
+  tree-toggled-bar semantics are about a Win32 window's menu bar and this target
+  has no window frame to attach one to, so there was nothing for the request to
+  do; forwarding it to the core's own menu overlay conflated two unrelated
+  things. The value is kept and read back as before.
+- The text-plane seam's header now states what the published pointer is: the
+  *last* row of a bottom-up bitmap, so a host must walk the signed stride rather
+  than copy `pitch × height` bytes forward from it. The core's copy did the
+  latter and read past the end of the allocation; the rule was implicit in the
+  pitch's sign and is now written down where a host reads it.
+- The compatibility table gained The House in Fata Morgana; its row and the
+  reasoning are in the era section below, which is where the table is described.
+
 ## 2026-10-16 — text plane, native menu, shims
 
 ### Text plane
@@ -92,6 +110,21 @@ from the libretro core, reading `.xp3` archives in place:
 - `SystemImpl`: message boxes logged to stderr; honours `KRKRSDL2_PERSONAL_PATH`.
 
 ## Engine compatibility (the era mask)
+
+Two titles are in the table, and they sit at opposite ends of it — which is the
+point of the mechanism:
+
+| Game | `data.xp3` crc32 | Engine | Era |
+|---|---|---|---|
+| Fate/stay night (English) | `64960AF9` | 2.19.15.783 | `2.19` — every switch on |
+| The House in Fata Morgana | `71604817` | 2.31.2013.411 | `modern` — none needed |
+
+Fata Morgana's engine is newer than every threshold in `CompatProfile`, so its
+row is the empty set stated explicitly: the title is recognised and logged by
+name rather than falling through to the default. Measured against the Wine
+reference of the same release, stepped through the same script input; at the
+title screen the two frames differ by 0.044 % of their pixels (a software
+cursor), and nothing about the era is what differs between them.
 
 `CompatProfile` selects the set of behaviours a game was written against — the
 class-scope `var`, post-`!`, `holdAlpha`, unary-`*` and layer-compositing
