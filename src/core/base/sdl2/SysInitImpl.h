@@ -22,6 +22,10 @@ extern tjs_string TVPNativeDataPath;
 extern bool TVPProjectDirSelected;
 extern void TVPEnsureDataPathDirectory();
 
+// Re-run project discovery for an in-process restart (libretro Reset); see the
+// definition in SysInitImpl.cpp.
+extern "C" void krkrsdl2_reset_project_dir_selection(void);
+
 
 extern bool TVPExecuteUserConfig();
 

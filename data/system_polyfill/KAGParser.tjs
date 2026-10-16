@@ -1993,10 +1993,30 @@ class __internal_KAGParser
 
 	function getNextTag()
 	{
+		// One-shot draw-face constant probe (see PluginStubs.tjs).
+		if (global.__krkrProbeFace !== void) global.__krkrProbeFace();
 		var res = true;
 		while (res === true)
 		{
 			res = this._getNextTag();
+		}
+		// Scenario tracing (KRKR_SCRIPT_DEBUG=1). Every tag the scenario
+		// produces passes through here, so this is the one place that shows
+		// what the engine is actually executing, in order — the fastest way to
+		// tell a script bug (wrong tag, wrong attribute) from a render bug.
+		if (global.__krkrScriptDebug === true && res)
+		{
+			try
+			{
+				var tn = res.__tag;
+				if (tn === void) tn = res.tagname;
+				var d = "" + tn;
+				if (res.text !== void) d += " text=\"" + res.text + "\"";
+				if (res.storage !== void) d += " storage=" + res.storage;
+				if (res.target !== void) d += " target=" + res.target;
+				global.__krkrScriptLog("[script] " + d);
+			}
+			catch (e) { /* tracing must never break the run */ }
 		}
 		return res;
 	}

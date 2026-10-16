@@ -44,6 +44,7 @@ external/krkrz/tjs2/tjsDisassemble.cpp
 external/krkrz/tjs2/tjsError.cpp
 external/krkrz/tjs2/tjsException.cpp
 external/krkrz/tjs2/tjsGlobalStringMap.cpp
+external/krkrz/tjs2/StructFormat.cpp
 external/krkrz/tjs2/tjsInterCodeExec.cpp
 external/krkrz/tjs2/tjsInterCodeGen.cpp
 external/krkrz/tjs2/tjsInterface.cpp
@@ -83,6 +84,7 @@ external/krkrz/utils/uni_cp932.cpp
 external/krkrz/visual/BitmapIntf.cpp
 external/krkrz/visual/BitmapLayerTreeOwner.cpp
 external/krkrz/visual/CharacterData.cpp
+external/krkrz/visual/CompositeLevel.cpp
 external/krkrz/visual/ComplexRect.cpp
 external/krkrz/visual/DrawDevice.cpp
 external/krkrz/visual/FontSystem.cpp
@@ -100,6 +102,7 @@ external/krkrz/visual/LoadJPEG.cpp
 external/krkrz/visual/LoadJXR.cpp
 external/krkrz/visual/LoadPNG.cpp
 external/krkrz/visual/LoadTLG.cpp
+external/krkrz/visual/MenuItemIntf.cpp
 external/krkrz/visual/NullDrawDevice.cpp
 external/krkrz/visual/PrerenderedFont.cpp
 external/krkrz/visual/RectItf.cpp
@@ -407,6 +410,15 @@ external/zlib/trees.c
 external/zlib/uncompr.c
 external/zlib/zutil.c
 src/core/base/sdl2/AndroidAssetManager.c
+src/core/base/sdl2/BuiltinPlugins.cpp
+src/core/base/sdl2/BuiltinShims.cpp
+src/core/base/sdl2/CompatProfile.cpp
+src/core/base/sdl2/DebugFlags.cpp
+src/shims/noop.c
+src/shims/drawer.cpp
+src/shims/extrans.cpp
+src/shims/firespark.cpp
+src/core/sdl2/FontDiscovery.cpp
 src/core/base/sdl2/EventImpl.cpp
 src/core/base/sdl2/FileSelector.cpp
 src/core/base/sdl2/FuncStubs.cpp
@@ -430,11 +442,13 @@ src/core/sound/sdl2/NullAudioDevice.cpp
 src/core/sound/sdl2/OpenALWaveMixer.cpp
 src/core/sound/sdl2/WaveImpl.cpp
 src/core/utils/sdl2/ClipboardImpl.cpp
+src/core/visual/Present.cpp
 src/core/visual/sdl2/BasicDrawDevice.cpp
 src/core/visual/sdl2/BitmapBitsAlloc.cpp
 src/core/visual/sdl2/BitmapInfomation.cpp
 src/core/visual/sdl2/GraphicsLoaderImpl.cpp
 src/core/visual/sdl2/LayerImpl.cpp
+src/core/visual/sdl2/MenuItemImpl.cpp
 src/core/visual/sdl2/TVPScreen.cpp
 src/core/visual/sdl2/VideoOvlImpl.cpp
 src/core/visual/sdl2/WindowImpl.cpp

@@ -60,7 +60,13 @@ public:
 		}
 		TVPAddLog(TJS_W("FAudio initializing..."));
 
-		uint32_t flags = 0;
+		/* FAUDIO_1024_QUANTUM: 21.33 ms quanta (1024 frames at 48 kHz) rather
+		 * than FAudio's default 10 ms (freq/100). The mixer's device here is
+		 * SDL's dummy, whose pacing sleeps via the OS timer; a 10 ms quantum is
+		 * shorter than the ~15.6 ms Windows timer tick, so its callbacks land
+		 * on tick boundaries and production falls short. 1024 frames is longer
+		 * than the tick. */
+		uint32_t flags = FAUDIO_1024_QUANTUM;
 		uint32_t hr = FAudioCreate(&FAudioObj, flags, FAUDIO_DEFAULT_PROCESSOR);
 		if (hr)
 		{

@@ -16,6 +16,26 @@ if(typeof System != 'undefined') {
 // fstat.dll
 function FileTime(fn) { return -1; }
 
+// util.dll (TYPE-MOON) — readFile(name) returns a file's text, or -1.
+//
+// Called bare, as a global, by Fate/stay night's English patch (Override.tjs,
+// loading the voice-ignore list). We answer with -1 rather than reading: the
+// caller tests `!= -1` before using the result, so the voice-ignore list simply
+// stays empty and every voiced line plays. That is the right default for a
+// voice-enabled patch, and it costs nothing — supplying a real read would only
+// let a user's ignore list silence characters differently.
+//
+// Assigned unconditionally, NOT behind `typeof readFile == 'undefined'`: in TJS
+// naming an undefined identifier in the test throws ("Member readFile does not
+// exist") instead of evaluating to 'undefined', so the guard would fail before
+// the assignment and the stub would never install. Nothing else defines this
+// name, so there is nothing to preserve.
+//
+// A real implementation is possible (TVPCreateTextStreamForRead) but would have
+// to be a compiled shim: there is no TJS-visible whole-file read primitive in
+// this build, which is why this is a stub and not a function body in TJS.
+global.readFile = function(name) { return -1; };
+
 // extrans.dll montage/effect classes. Minimal no-op equivalents so scenarios
 // that construct them do not raise.
 class Quake      { function Quake() {}      function start() {} function stop() {} function finalize() {} }
@@ -51,3 +71,54 @@ function AdjustMoni(params)
 	if(y + h > System.screenHeight) y = System.screenHeight - h;
 	return %[ "x" => int(x), "y" => int(y) ];
 }
+
+// Scenario tracing (read by KAGParser.tjs). When global.__krkrScriptDebug is
+// true, every scenario tag is printed as it is executed — the fastest way to
+// tell a script bug (wrong tag, wrong attribute) from a rendering bug.
+//
+// System.inform is the one TJS-visible way to print in this build: it reaches
+// TVPShowSimpleMessageBox, which writes to stderr. Debug.message only appends
+// to an in-memory deque that nothing drains, so it prints nothing. (System has
+// no getEnvVar here either, which is why the flag is set from C++ under
+// KRKR_SCRIPT_DEBUG=1.)
+global.__krkrScriptDebug = false;
+global.__krkrScriptLog = function(msg) { global.System.inform(msg, "script"); };
+
+// One-shot diagnostic for the df* draw-face constants. The whole scripted
+// hyperlink path is built on "ll.face = dfProvince": if dfProvince does not
+// resolve, that assignment throws, the layer keeps its automatic face, and the
+// province fill lands on the MAIN image as an opaque black rectangle exactly
+// where the link text should be. Prints once, on first use.
+//
+// The done-flag is defined here rather than created lazily: reading an
+// undefined global in TJS throws ("Member ... does not exist"), it does not
+// evaluate to void, so a lazy test can never succeed.
+global.__krkrProbeFaceDone = false;
+global.__krkrProbeFace = function() {
+	if (global.__krkrProbeFaceDone === true) return;
+	global.__krkrProbeFaceDone = true;
+	try {
+		global.System.inform(
+			"dfBoth=" + dfBoth + " dfAlpha=" + dfAlpha +
+			" dfMask=" + dfMask + " dfProvince=" + dfProvince +
+			" dfAuto=" + dfAuto, "probe");
+	} catch (e) {
+		global.System.inform("df* constants NOT defined: " + e.message, "probe");
+	}
+	// Does the native Layer.face property round-trip on a real KAG layer? If it
+	// does not, the scripted "ll.face = dfProvince; ll.fillRect(...)" idiom can
+	// never reach the province image and the fill lands on the main frame.
+	try {
+		var w = null;
+		if (typeof kag !== "undefined" && kag !== null && kag.fore !== void)
+			w = kag.fore.base.window;
+		if (w === null && global.System !== void)
+			w = null;
+		var probe = new global.Layer(w);
+		probe.face = dfProvince;
+		global.System.inform("Layer.face round-trip: set " + dfProvince +
+			", got " + probe.face, "probe");
+	} catch (e) {
+		global.System.inform("Layer.face probe threw: " + e.message, "probe");
+	}
+};

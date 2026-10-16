@@ -10,13 +10,19 @@
 #include "SysInitIntf.h"
 #include "SysInitImpl.h"
 #include "CharacterSet.h"
+
+#include "FontDiscovery.h"
 #include "WaveImpl.h"
 #include "TimerThread.h"
 #include "MsgIntf.h"
+#include "WindowIntf.h"
+#include "FontRasterizer.h"
+#include "EventIntf.h"
 #include "DebugIntf.h"
 #include "tjsArray.h"
 #include "StorageIntf.h"
 #include "SDLBitmapCompletion.h"
+#include "PresentIntf.h"
 #include "ScriptMgnIntf.h"
 #include "SystemControl.h"
 #include "PluginImpl.h"
@@ -30,11 +36,40 @@
 #ifdef _WIN32
 #include <shellapi.h>
 #include <stdlib.h>
+#include <mmsystem.h>   /* timeBeginPeriod */
+#pragma comment(lib, "winmm.lib")
 #endif
 
 #ifndef _WIN32
 #include <unistd.h>
 #endif
+
+/* Portable sub-frame sleep, in milliseconds (may be fractional). nanosleep
+ * exists on mingw but is quantized to the ~15.6 ms Windows timer tick: a 1 ms
+ * wait actually blocks ~15.7 ms (measured), so the frame limiter overshoots
+ * most of a 60 fps frame every iteration and the audio producer stutters.
+ * SDL_Delay is the portable primitive — it uses the Win32 waitable timer on
+ * Windows (sub-millisecond when the process timer resolution is raised) and
+ * nanosleep elsewhere — and SDL is already linked. */
+static void krkr_sleep_ms(double ms)
+{
+	if (ms <= 0.0) return;
+	if (ms < 1.0)
+	{
+#ifdef _WIN32
+		SDL_Delay(1);
+#else
+		struct timespec ts;
+		ts.tv_sec = 0;
+		ts.tv_nsec = (long)(ms * 1e6);
+		nanosleep(&ts, NULL);
+#endif
+	}
+	else
+	{
+		SDL_Delay((Uint32)(ms + 0.5));
+	}
+}
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -65,8 +100,6 @@ extern void TVPLoadMessage();
 class TVPWindowWindow;
 static TVPWindowWindow *_lastWindowWindow, *_currentWindowWindow;
 #ifdef KRKRSDL2_LIBRETRO
-extern "C" void *SDL_libretro_surface = NULL;
-extern "C" int SDL_libretro_surface_updated = 0;
 /* libretro fast-forward. Set from the core wrapper (krkr_set_fastforward):
  * skips the engine's own frame limiter so it runs unthrottled. Pause is
  * handled separately via the poll heartbeat (krkr_notify_poll). */
@@ -76,11 +109,13 @@ extern "C" volatile int krkrsdl2_fastforward = 0;
  * entirely — it has no core-visible pause callback), the stamp goes stale and
  * the engine idles. 0 = core has not polled yet (run normally). */
 extern "C" volatile long long krkrsdl2_last_poll_ms = 0;
-/* Fast-forward time dilation. TVPGetRoughTickCount32() (see
- * krkrz/utils/TickCount.cpp) adds this bias to the real tick, so script/video
- * timers run KRKR_FF_TIME_SCALE x faster while fast-forwarding. Advanced from
- * real elapsed time, so it is independent of how fast the loop iterates. */
-extern "C" volatile long long krkrsdl2_tick_extra_ms = 0;
+/* The single game clock, installed by the core wrapper (krkr_set_clock).
+ * TVPGetRoughTickCount32() calls it (see krkrz/utils/TickCount.cpp), so every
+ * engine timer/transition/script wait reads the same dilated time the core
+ * computes — the engine keeps no dilation state of its own. NULL until the
+ * core installs it (very early init uses real SDL time). */
+extern "C" long long (*krkrsdl2_clock_fn)(void) = 0;
+extern "C" void krkr_set_clock(long long (*fn)(void)) { krkrsdl2_clock_fn = fn; }
 /* Game's auto/skip state, mirrored from TJS `kag.tflags.autoMode`
  * (0 = off, 1 = skip, 2 = auto-read) so the core can show its mode indicator.
  * Updated on the engine thread (TJS is not thread-safe); see process_events. */
@@ -95,15 +130,72 @@ extern "C" volatile int krkrsdl2_engine_stopped = 0;
  * checks this and outputs silence without running the FAudio engine, so a pause
  * also quiets and idles the audio path. */
 extern "C" volatile int krkrsdl2_paused = 0;
+/* Set by the core wrapper when the frontend reports audio suspended
+ * (RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE with the audio bit clear — e.g. a
+ * fullscreen/window transition, which RetroArch marks AUDIO_FLAG_SUSPENDED
+ * across the display reinit). The audio thread must not advance the engine
+ * while the frontend is not consuming: the produced audio would be discarded
+ * and the game would have advanced for nothing. Unlike krkrsdl2_paused this is
+ * independent of the poll heartbeat, which stays fresh during a transition
+ * because retro_run keeps being called. */
+extern "C" volatile int krkrsdl2_audio_suspended = 0;
 /* Set by the core wrapper when the frontend asked to quit (retro_unload_game /
  * user exit). The engine's main loop must honour it even while paused/idle:
  * otherwise the loop keeps returning in the pause gate, never reaches the
  * terminate check, and the core's pthread_join blocks forever. */
 extern "C" volatile int krkrsdl2_quit_requested = 0;
-#define KRKR_FF_TIME_SCALE 16
+/* Forced internal resolution. The libretro core sets this (via
+ * krkr_set_resolution) from the "Internal Resolution" core option so the
+ * engine sizes its primary surface to the frontend's target and renders at
+ * that size natively — no post-hoc up/down-scaling of the whole frame. 0 means
+ * "not forced": the game's own scWidth/scHeight applies. The bounds mirror the
+ * core's surface sanity check (<=8192 wide, <=2160 tall). */
+extern "C" int krkrsdl2_forced_width = 0;
+extern "C" int krkrsdl2_forced_height = 0;
+#define KRKRSDL2_MAX_RES_W 8192
+#define KRKRSDL2_MAX_RES_H 2160
 #endif
 static SDL_GameController **sdl_controllers = nullptr;
 static int sdl_controller_num = 0;
+
+/* Button state for pad input delivered by the frontend/core shim. In libretro
+ * builds the engine never opens a controller (refresh_controllers() returns
+ * early), so sdl_controllers[] is empty and the native
+ * SDL_GameControllerGetButton path in TVPGetJoyPadAsyncState would report every
+ * VK_PAD* as unpressed. The shim injects SDL_CONTROLLERBUTTON* events instead;
+ * record their state here so System.getKeyState(VK_PAD*) — which KAG games use
+ * for menu navigation (Fata's MainWindow createPadKeyMap) — reflects real pad
+ * input. Indexed by SDL_GameControllerButton. */
+static Uint8 sdl_pad_button_state[SDL_CONTROLLER_BUTTON_MAX];
+extern "C" void krkrsdl2_note_pad_button(int button, int pressed)
+{
+	if (button >= 0 && button < SDL_CONTROLLER_BUTTON_MAX)
+		sdl_pad_button_state[button] = (Uint8)(pressed ? 1 : 0);
+}
+
+/* Key state for keyboard input delivered by the frontend/core shim. The core
+ * pushes synthetic SDL_KEYDOWN/UP events, which the engine turns into TJS key
+ * events — but SDL's own keyboard state is not updated by SDL_PushEvent, so
+ * SDL_GetKeyboardState() in TVPGetKeyMouseAsyncState() reports such a key as
+ * up. Scripts that poll System.getKeyState(VK_RETURN) (KAG's advance check)
+ * then never see the key. Record the injected state here so the async key query
+ * reflects it. Indexed by KiriKiri VK. */
+static Uint8 sdl_key_state[VK_PAD_LAST + 1];
+extern "C" void krkrsdl2_note_key(int vk, int down)
+{
+	if (vk >= 0 && vk <= VK_PAD_LAST)
+		sdl_key_state[vk] = (Uint8)(down ? 1 : 0);
+}
+
+/* Mouse button state for injected clicks. Same reason as the keyboard and pad
+ * tables: SDL_GetMouseState() reads SDL's own button array, which a synthetic
+ * SDL_MOUSEBUTTONDOWN does not touch. Indexed by KiriKiri VK_LBUTTON etc. */
+static Uint8 sdl_mouse_state[VK_XBUTTON2 + 1];
+extern "C" void krkrsdl2_note_mouse_button(int vk, int down)
+{
+	if (vk >= VK_LBUTTON && vk <= VK_XBUTTON2)
+		sdl_mouse_state[vk] = (Uint8)(down ? 1 : 0);
+}
 
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 static void process_events();
@@ -763,6 +855,10 @@ public:
 	static TVPWindowWindow *FindPrimaryWindow();
 	void PublishLibretroSurface();
 	static void WindowOffset(TVPWindowWindow *win, TVPWindowWindow *base, int &ox, int &oy);
+	/* Blank the primary window's surface on engine terminate (KAG `[close]`).
+	 * A method because `surface` is protected and the caller, process_events(),
+	 * is a free function. */
+	static void BlankPrimarySurface();
 	/* The libretro shim has no window of its own: it pushes synthetic events
 	 * whose coordinates are in the primary window's client space. A modal
 	 * window (YesNoDialog, save-load confirmation) is displaced from the
@@ -807,6 +903,25 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 	int new_window_w = 640;
 	int new_window_h = 480;
 	Uint32 window_flags = 0;
+
+#ifdef KRKRSDL2_LIBRETRO
+	/* Ask the host how large the surface should be, through the presentation
+	 * seam. The engine's own default is 640x480, which is what the primary
+	 * layer and the game's System.screenWidth/screenHeight would otherwise be
+	 * based on; the libretro core answers with the frontend's expected
+	 * resolution, so a script that lays itself out from the screen size is
+	 * right from the first frame instead of corrected after it. Both values 0
+	 * means the host has no opinion and the defaults stand. */
+	{
+		tjs_int want_w = 0, want_h = 0;
+		TVPQueryPresentSurfaceSize(&want_w, &want_h);
+		if (want_w > 0 && want_h > 0)
+		{
+			new_window_w = (int)want_w;
+			new_window_h = (int)want_h;
+		}
+	}
+#endif
 
 #ifdef SDL_HINT_RENDER_SCALE_QUALITY
 	SDL_SetHintWithPriority(SDL_HINT_RENDER_SCALE_QUALITY, "2", SDL_HINT_DEFAULT);
@@ -928,7 +1043,6 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 		{
 			this->surface = SDL_GetWindowSurface(this->window);
 			#ifdef KRKRSDL2_LIBRETRO
-			SDL_libretro_surface = (void*)this->surface;
 			#endif
 			if (!this->surface)
 			{
@@ -1019,6 +1133,11 @@ TVPWindowWindow::~TVPWindowWindow()
 
 void TVPWindowWindow::SetPaintBoxSize(tjs_int w, tjs_int h)
 {
+	/* A forced internal resolution (krkr_set_resolution) is reported through
+	 * tTVPScreen::GetWidth/GetHeight, so the engine/script derives its own
+	 * window and primary-layer size from it. The paint box follows that size;
+	 * the surface is never forced independently of the layer, which would
+	 * desynchronise the 1:1 layer->surface completion blit. */
 #ifdef KRKRSDL2_ENABLE_ZOOM
 	this->LayerWidth = w;
 	this->LayerHeight = h;
@@ -1499,6 +1618,8 @@ void TVPWindowWindow::SetHeight(tjs_int h)
 }
 void TVPWindowWindow::SetSize(tjs_int w, tjs_int h)
 {
+	/* The forced resolution reaches this through tTVPScreen::GetWidth/Height
+	 * (the caller derives w/h from it), so no override is applied here. */
 #ifndef KRKRSDL2_WINDOW_SIZE_IS_LAYER_SIZE
 	if (this->window)
 	{
@@ -1794,6 +1915,26 @@ TVPWindowWindow *TVPWindowWindow::FindPrimaryWindow()
 	return w;
 }
 
+/* Fill the primary window's surface with black.
+ *
+ * Used when the game ends itself (KAG `[close]`): the engine stops drawing and
+ * the core parks on the stopped flag, so without this the frontend keeps
+ * showing whatever was on screen when the script ended.
+ *
+ * This replaced a poke at SDL_libretro_surface, the global the old
+ * struct-scraping path published for the host. That global had no readers left
+ * once the presentation seam replaced that path, and reaching the window that
+ * will actually be composited next is both narrower and honest about intent. */
+void TVPWindowWindow::BlankPrimarySurface()
+{
+	TVPWindowWindow *primary = FindPrimaryWindow();
+	if (!primary || !primary->surface)
+		return;
+	SDL_Surface *s = primary->surface;
+	if (s->pixels && s->h > 0 && s->pitch > 0)
+		memset(s->pixels, 0, (size_t)s->pitch * (size_t)s->h);
+}
+
 /* Position of this window's content origin relative to `base`'s content
  * origin, in pixels. Modal placement (YesNoDialog setPos) is expressed in the
  * *client* coordinate space of the main window, which is what this returns. */
@@ -1812,6 +1953,54 @@ void TVPWindowWindow::WindowOffset(TVPWindowWindow *win, TVPWindowWindow *base, 
 	oy = wy - by;
 }
 
+#ifdef KRKRSDL2_LIBRETRO
+/* Hand a finished window surface to the host through the presentation seam
+ * (visual/Present.h), which is the only thing the libretro core reads.
+ *
+ * Why this exists rather than the core reading SDL_libretro_surface: that
+ * arrangement made SDL's struct layout part of the ABI, and the core had to
+ * force a dummy video driver so a surface existed at all. The seam is a plain
+ * description of a pixel buffer, so the core needs to know nothing about SDL.
+ *
+ * `changed` is the engine's own update rectangle when it has one; NULL means
+ * the whole buffer changed, which is what the modal path wants since it
+ * recomposites the primary and the dialog together.
+ *
+ * The surface is BGRA with a padded pitch and top-down rows on this backend,
+ * which is exactly the contract, so the pixel pointer is passed through with no
+ * copy: the host consumes it during the callback. */
+static void TVPPresentLibretroSurface(SDL_Surface *surface, const tTVPRect *changed)
+{
+	if (!surface || !surface->pixels || surface->w <= 0 || surface->h <= 0 || surface->pitch <= 0)
+	{
+		return;
+	}
+	if (surface->format->BytesPerPixel != 4)
+	{
+		/* The seam's format is BGRA8888; anything else would be silently
+		 * misread by the host rather than reported, so refuse it. */
+		return;
+	}
+	tTVPRect rect;
+	bool full = true;
+	if (changed)
+	{
+		rect = *changed;
+		full = false;
+	}
+	else
+	{
+		rect.left = 0;
+		rect.top = 0;
+		rect.right = surface->w;
+		rect.bottom = surface->h;
+	}
+	static tjs_uint64 present_serial = 0;
+	TVPPresentComposite(surface->pixels, surface->w, surface->h, surface->pitch,
+		rect, full, ++present_serial);
+}
+#endif /* KRKRSDL2_LIBRETRO */
+
 void TVPWindowWindow::PublishLibretroSurface()
 {
 	if (!this->surface)
@@ -1822,8 +2011,7 @@ void TVPWindowWindow::PublishLibretroSurface()
 	if (!primary || !primary->surface || this == primary)
 	{
 		/* Primary (or no primary known): publish as before. */
-		SDL_libretro_surface = (void*)this->surface;
-		SDL_libretro_surface_updated = 1;
+		TVPPresentLibretroSurface(this->surface, NULL);
 		return;
 	}
 
@@ -1848,26 +2036,22 @@ void TVPWindowWindow::PublishLibretroSurface()
 	static int shadow_w = 0, shadow_h = 0;
 	if (!shadow || shadow_w != primary->surface->w || shadow_h != primary->surface->h)
 	{
-		/* Build the replacement *before* retiring the old one, and keep
-		 * SDL_libretro_surface pointing at a live surface throughout: the
-		 * libretro core reads that global (and the surface's w/h/pixels)
-		 * from another thread each frame, so freeing the old surface while
-		 * the global still referenced it caused a use-after-free (visible
-		 * as wildly invalid geometry). */
+		/* Build the replacement *before* retiring the old one. The shadow is
+		 * handed to the presentation seam as the pixels of a present, and a
+		 * present is consumed during its callback, so the old shadow must not
+		 * be freed while one could still be reading it. (This originally
+		 * guarded a global the core scraped from another thread; that global
+		 * is gone, but the ordering still matters for the same reason.) */
 		SDL_Surface *new_shadow = SDL_CreateRGBSurface(0, primary->surface->w, primary->surface->h, 32,
 			0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
 		if (!new_shadow)
 		{
-			SDL_libretro_surface = (void*)primary->surface;
-			SDL_libretro_surface_updated = 1;
 			return;
 		}
 		SDL_Surface *old_shadow = shadow;
 		shadow = new_shadow;
 		shadow_w = primary->surface->w;
 		shadow_h = primary->surface->h;
-		SDL_libretro_surface = (void*)shadow;
-		SDL_libretro_surface_updated = 1;
 		if (old_shadow)
 		{
 			SDL_FreeSurface(old_shadow);
@@ -1927,8 +2111,7 @@ void TVPWindowWindow::PublishLibretroSurface()
 		SDL_UnlockSurface(this->surface);
 	}
 
-	SDL_libretro_surface = (void*)shadow;
-	SDL_libretro_surface_updated = 1;
+	TVPPresentLibretroSurface(shadow, NULL);
 }
 #endif /* KRKRSDL2_LIBRETRO */
 
@@ -2976,6 +3159,35 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 					}
 					if (hasbtn)
 					{
+						/* Mirror into the async key-state table (synthetic clicks
+						 * do not update SDL's own button state; see
+						 * sdl_mouse_state). Map the SDL button to its VK. */
+						{
+							tjs_uint vkbtn = 0;
+							switch (event.button.button) {
+								case SDL_BUTTON_LEFT:   vkbtn = VK_LBUTTON;  break;
+								case SDL_BUTTON_RIGHT:  vkbtn = VK_RBUTTON;  break;
+								case SDL_BUTTON_MIDDLE: vkbtn = VK_MBUTTON;  break;
+								case SDL_BUTTON_X1:     vkbtn = VK_XBUTTON1; break;
+								case SDL_BUTTON_X2:     vkbtn = VK_XBUTTON2; break;
+							}
+							if (vkbtn)
+								krkrsdl2_note_mouse_button(vkbtn, event.type == SDL_MOUSEBUTTONDOWN);
+						}
+						/* `s` was sampled above, before this button transition
+						 * was recorded, so a button-up still carries the
+						 * "button held" bit. The layer manager consults that
+						 * bit to decide whether to ReleaseCapture()
+						 * (LayerManager.cpp PrimaryMouseUp ->
+						 * TVPIsAnyMouseButtonPressedInShiftStateFlags); with a
+						 * stale bit the test is true on the up event, capture
+						 * is never released, and every subsequent click is
+						 * routed to the first layer that ever captured rather
+						 * than to the layer under the cursor. Re-read the
+						 * button bits now that the transition is recorded. */
+						s &= ~(TVP_SS_LEFT | TVP_SS_RIGHT | TVP_SS_MIDDLE |
+							TVP_SS_DOUBLE | TVP_SS_X1 | TVP_SS_X2);
+						s |= GetMouseButtonState();
 						this->lastMouseX = event.button.x;
 						this->lastMouseY = event.button.y;
 						this->TranslateWindowToDrawArea(this->lastMouseX, this->lastMouseY);
@@ -3035,6 +3247,10 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 				case SDL_CONTROLLERBUTTONDOWN:
 				case SDL_CONTROLLERBUTTONUP:
 				{
+					/* Record for System.getKeyState(VK_PAD*) — see
+					 * sdl_pad_button_state / TVPGetJoyPadAsyncState. */
+					krkrsdl2_note_pad_button(event.cbutton.button,
+						event.cbutton.state == SDL_PRESSED);
 					switch (event.cbutton.state)
 					{
 						case SDL_PRESSED:
@@ -3059,6 +3275,10 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 							return false;
 						}
 					}
+					/* Mirror into the async key-state table: synthetic events
+					 * do not update SDL's own keyboard state, which
+					 * System.getKeyState() reads. See sdl_key_state. */
+					krkrsdl2_note_key(sdl_key_to_vk_key(event.key.keysym.sym), 1);
 					if (event.key.repeat)
 					{
 						s |= TVP_SS_REPEAT;
@@ -3096,6 +3316,7 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 							return false;
 						}
 					}
+					krkrsdl2_note_key(sdl_key_to_vk_key(event.key.keysym.sym), 0);
 					tjs_uint unified_vk_key = 0;
 					switch (event.key.keysym.sym)
 					{
@@ -3228,11 +3449,11 @@ static bool process_events()
 		clock_gettime(CLOCK_MONOTONIC, &hb_now);
 		long long hb_now_ms = (long long)hb_now.tv_sec * 1000 + hb_now.tv_nsec / 1000000;
 		if (!krkrsdl2_quit_requested &&
-		    krkrsdl2_last_poll_ms != 0 && hb_now_ms - krkrsdl2_last_poll_ms > 250)
+		    ((krkrsdl2_last_poll_ms != 0 && hb_now_ms - krkrsdl2_last_poll_ms > 250)
+		     || krkrsdl2_audio_suspended))
 		{
 			krkrsdl2_paused = 1;
-			struct timespec ps = {0, 5 * 1000 * 1000};
-			nanosleep(&ps, NULL);
+			krkr_sleep_ms(5.0);
 			return true; /* keep the loop alive but idle */
 		}
 		krkrsdl2_paused = 0;
@@ -3266,34 +3487,11 @@ static bool process_events()
 			+ (now.tv_nsec - s_last_tick.tv_nsec) / 1e9;
 		if (dt < budget)
 		{
-			double wait = budget - dt;
-			struct timespec rem;
-			rem.tv_sec  = (time_t)wait;
-			rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
-			nanosleep(&rem, NULL);
+			krkr_sleep_ms((budget - dt) * 1000.0);
 		}
 	}
 	clock_gettime(CLOCK_MONOTONIC, &s_last_tick);
 
-#ifdef KRKRSDL2_LIBRETRO
-	/* Fast-forward time dilation: advance the virtual clock bias by the real
-	 * time elapsed x (scale-1), so script/video timers run `scale` x faster
-	 * without depending on how fast this loop iterates. The bias is read by
-	 * TVPGetRoughTickCount32() (krkrz/utils/TickCount.cpp). */
-	{
-		static struct timespec s_vt_last = {0, 0};
-		struct timespec vt_now;
-		clock_gettime(CLOCK_MONOTONIC, &vt_now);
-		if (s_vt_last.tv_sec != 0 && krkrsdl2_fastforward)
-		{
-			double edt = (vt_now.tv_sec - s_vt_last.tv_sec)
-				+ (vt_now.tv_nsec - s_vt_last.tv_nsec) / 1e9;
-			if (edt > 0.0 && edt < 0.5)
-				krkrsdl2_tick_extra_ms += (long long)(edt * (KRKR_FF_TIME_SCALE - 1) * 1000.0);
-		}
-		s_vt_last = vt_now;
-	}
-#endif
 #endif /* !__EMSCRIPTEN__ */
 
 #ifdef KRKRSDL2_LIBRETRO
@@ -3328,15 +3526,11 @@ static bool process_events()
 			if (::Application->IsTarminate())
 			{
 #ifdef KRKRSDL2_LIBRETRO
-				/* The game closed itself (KAG `[close]`). Blank the published
-				 * surface so the core shows an empty screen, and flag it so
-				 * the core parks permanently (does not quit the frontend). */
-				if (SDL_libretro_surface)
-				{
-					SDL_Surface *s = (SDL_Surface*)SDL_libretro_surface;
-					if (s->pixels && s->h > 0 && s->pitch > 0)
-						memset(s->pixels, 0, (size_t)s->pitch * (size_t)s->h);
-				}
+				/* The game closed itself (KAG `[close]`). Blank the primary
+				 * window's surface so the next present shows an empty screen,
+				 * and flag it so the core parks permanently (does not quit the
+				 * frontend). */
+				TVPWindowWindow::BlankPrimarySurface();
 				krkrsdl2_engine_stopped = 1;
 #endif
 				TVPSystemUninit();
@@ -3367,6 +3561,10 @@ void krkrsdl2_pre_init_platform(void)
 #ifdef _WIN32
 	_set_error_mode(_OUT_TO_STDERR);
 #endif
+	/* Build stamp: printed here (the first engine call the core makes) so the
+	 * log proves which module binary is actually loaded. Bump ENGINE_BUILD_STAMP
+	 * on every behavioural change to the engine. */
+	fprintf(stderr, "krkrsdl2 engine: build=%s\n", ENGINE_BUILD_STAMP);
 }
 
 void krkrsdl2_set_args(int argc, tjs_char **argv)
@@ -3434,6 +3632,15 @@ bool krkrsdl2_init_platform(void)
 #ifdef SDL_HINT_IME_SHOW_UI
 	SDL_SetHintWithPriority(SDL_HINT_IME_SHOW_UI, "1", SDL_HINT_DEFAULT);
 #endif
+	/* Windows defaults to a ~15.6 ms timer tick; SDL_Delay and SDL's own audio
+	 * thread both inherit it, which makes the mixer bursty and the frame
+	 * limiter overshoot. 1 ms resolution is what a real-time audio producer
+	 * needs. (This is the process hint; the winmm timeBeginPeriod call below
+	 * covers the plain Win32 timers too.) */
+#ifdef SDL_HINT_TIMER_RESOLUTION
+	SDL_SetHintWithPriority(SDL_HINT_TIMER_RESOLUTION, "1", SDL_HINT_OVERRIDE);
+#endif
+	timeBeginPeriod(1);
 #endif
 
 #ifdef TVP_LOG_TO_COMMANDLINE_CONSOLE
@@ -3474,6 +3681,52 @@ extern "C" void krkr_notify_poll(long long ms)
 {
 	krkrsdl2_last_poll_ms = ms;
 }
+
+/* Frontend reports audio suspended (RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE
+ * audio bit clear), e.g. across a fullscreen/window transition. The audio
+ * thread then stops advancing the engine, so the game does not run ahead of a
+ * consumer that is not reading. The poll heartbeat stays fresh throughout, so
+ * this cannot be inferred from it. */
+extern "C" void krkr_set_audio_suspended(int suspended)
+{
+	krkrsdl2_audio_suspended = suspended ? 1 : 0;
+}
+
+/* Frontend asks the engine to shut down. This is a REQUEST the engine loop
+ * acknowledges on its own thread (it checks the flag before its pause gate and
+ * then reaches the terminate path) — the frontend never pokes the flag or calls
+ * Terminate directly, which would race the engine's own teardown. */
+extern "C" void krkrsdl2_request_quit(void)
+{
+	krkrsdl2_quit_requested = 1;
+}
+
+/* Inform the engine of the external resolution the frontend expects (0,0
+ * clears it). Call before the game builds its main window. The value is
+ * reported by tTVPScreen::GetWidth/GetHeight (System.screenWidth/screenHeight)
+ * so an engine/script that lays itself out from the screen size renders
+ * natively at the target; the core then scales the finished frame like any
+ * other differently-sized output. The engine's SDL surface is deliberately NOT
+ * forced to this size — the layer->surface completion blit is a 1:1 copy in
+ * layer coordinates, so a surface that disagrees with the layer either
+ * overflows the heap or drops the frame. Values outside the sane bounds are
+ * ignored rather than clamped: a bogus request should leave the game's own size
+ * in place. */
+extern "C" void krkr_set_resolution(int w, int h)
+{
+	if (w == 0 && h == 0)
+	{
+		krkrsdl2_forced_width = 0;
+		krkrsdl2_forced_height = 0;
+		return;
+	}
+	if (w <= 0 || h <= 0 || w > KRKRSDL2_MAX_RES_W || h > KRKRSDL2_MAX_RES_H)
+	{
+		return;
+	}
+	krkrsdl2_forced_width = w;
+	krkrsdl2_forced_height = h;
+}
 #endif
 
 void krkrsdl2_cleanup(void)
@@ -3484,11 +3737,68 @@ void krkrsdl2_cleanup(void)
 	::Application = nullptr;
 }
 
+/* Prepare for an in-process restart (libretro Reset). The engine .so stays
+ * mapped across a reset and its process-global one-shot latches survive
+ * teardown, so the next StartApplication() would short-circuit — most visibly
+ * TVPUninitScriptEngine() left TVPScriptEngine NULL and the startup script then
+ * died with a TJS "Internal Error". Re-arm those latches (the restart hooks live
+ * beside the flags they own, in SysInitIntf.cpp / ScriptMgnIntf.cpp) and clear
+ * the libretro state flags a previous run may have left set. Deliberately does
+ * NOT re-dlopen the engine: letting the mapping persist keeps this a logical
+ * restart, not a fresh process. */
+extern "C" void krkrsdl2_prepare_restart(void)
+{
+	/* Re-arm the teardown guard. Besides letting the next teardown run, this
+	 * re-opens the "not yet uninit" window in which the engine actually PRINTS
+	 * script errors (ShowException is skipped once the flag is set). */
+	krkrsdl2_reset_system_uninit_flag();
+	krkrsdl2_reset_script_engine_latches();
+	krkrsdl2_reset_timer_thread();
+	krkrsdl2_reset_window_registry();
+	krkrsdl2_reset_storage_autopaths();
+	krkrsdl2_reset_storage_overrides();
+	krkrsdl2_reset_storage_options();
+
+	/* Re-run project discovery: otherwise the second run keeps the first run's
+	 * project and never registers the game archive, so its startup.tjs resolves
+	 * to the polyfill instead of the game. */
+	krkrsdl2_reset_project_dir_selection();
+
+	/* Rebuild the font rasterizers that the previous teardown released. */
+	krkrsdl2_reset_font_rasterizers();
+
+	/* Drop events queued by the previous run — they reference freed windows. */
+	krkrsdl2_reset_event_queues();
+
+	krkrsdl2_quit_requested = 0;
+	krkrsdl2_engine_stopped = 0;
+	krkrsdl2_auto_mode = 0;
+	krkrsdl2_paused = 0;
+	krkrsdl2_last_poll_ms = 0;
+	krkrsdl2_fastforward = 0;
+
+	/* SDL stays initialised across the restart (the engine never calls
+	 * SDL_Quit), so anything the previous run posted onto the global event
+	 * queue is still there and would be dispatched by the next run's event
+	 * loop — including timer/thread events that reference state the teardown
+	 * invalidated. Drop the whole queue; the fresh run re-posts what it needs. */
+	SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+
+	/* Unpublish the surface. It points at the previous run's (now freed) window
+	 * surface; a terminate/blank path that reads it (process_events) would
+	 * dereference freed pixels. The next run republishes its own. The core's
+	 * own copy of this pointer is cleared separately, in the cabi. */
+}
+
 bool TVPGetKeyMouseAsyncState(tjs_uint keycode, bool getcurrent)
 {
 	if (keycode >= VK_LBUTTON && keycode <= VK_XBUTTON2 && keycode != VK_CANCEL)
 	{
 		Uint32 state = SDL_GetMouseState(nullptr, nullptr);
+		/* Synthetic clicks do not update SDL's button state; fall back to the
+		 * table recorded from injected events. */
+		if (keycode <= VK_XBUTTON2 && sdl_mouse_state[keycode])
+			return true;
 		switch (keycode)
 		{
 			case VK_LBUTTON:
@@ -3508,20 +3818,28 @@ bool TVPGetKeyMouseAsyncState(tjs_uint keycode, bool getcurrent)
 	if (keycode >= VK_SHIFT && keycode <= VK_MENU)
 	{
 		Uint32 state = SDL_GetModState();
+		bool down = false;
 		switch (keycode)
 		{
-			case VK_SHIFT:
-				return !!(state & KMOD_SHIFT);
-			case VK_MENU:
-				return !!(state & KMOD_ALT);
-			case VK_CONTROL:
-				return !!(state & KMOD_CTRL);
-			default:
-				return false;
+			case VK_SHIFT:   down = !!(state & KMOD_SHIFT); break;
+			case VK_MENU:    down = !!(state & KMOD_ALT);   break;
+			case VK_CONTROL: down = !!(state & KMOD_CTRL);  break;
+			default:         return false;
 		}
+		/* Synthetic modifier keys do not update SDL's modifier state either. */
+		if (!down) down = !!sdl_key_state[keycode];
+		return down;
 	}
 	const Uint8 *state = SDL_GetKeyboardState(nullptr);
-	return !!(state[SDL_GetScancodeFromKey(vk_key_to_sdl_key(keycode))]);
+	bool sdl_down = !!(state[SDL_GetScancodeFromKey(vk_key_to_sdl_key(keycode))]);
+	/* Synthetic key events pushed by the libretro shim do not touch SDL's
+	 * keyboard state array (SDL_PushEvent bypasses it), so also consult the
+	 * state recorded from those events. Without this, scripts polling
+	 * System.getKeyState(VK_RETURN) — KAG's text-advance check — never see the
+	 * pad's A button. */
+	if (!sdl_down && keycode <= VK_PAD_LAST)
+		sdl_down = !!sdl_key_state[keycode];
+	return sdl_down;
 }
 
 bool TVPGetJoyPadAsyncState(tjs_uint keycode, bool getcurrent)
@@ -3535,6 +3853,20 @@ bool TVPGetJoyPadAsyncState(tjs_uint keycode, bool getcurrent)
 			{
 				is_pressed = is_pressed || !!SDL_GameControllerGetButton(sdl_controllers[i], (SDL_GameControllerButton)vk_key_to_sdl_gamecontrollerbutton(keycode));
 			}
+		}
+	}
+	/* Pad input injected by the libretro core shim (which does not open the
+	 * controller natively). Also honour VK_PADANY. */
+	{
+		Uint8 btn = vk_key_to_sdl_gamecontrollerbutton(keycode);
+		if (keycode == VK_PADANY)
+		{
+			for (int i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
+				is_pressed = is_pressed || !!sdl_pad_button_state[i];
+		}
+		else if (btn < SDL_CONTROLLER_BUTTON_MAX)
+		{
+			is_pressed = is_pressed || !!sdl_pad_button_state[btn];
 		}
 	}
 	return is_pressed;
@@ -3586,35 +3918,78 @@ TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state)
 
 // System font loading: scan font directories and register with FreeType
 extern void TVPAddSystemFontToFreeType(const std::string& storage, std::vector<tjs_string>* faces);
+extern bool TVPAddFaceAliasToFreeType(const tjs_string& target, const tjs_string& alias);
+
+/* Windows face names KiriKiri/KAG games request, mapped onto the bundled Mona
+ * font. Mona is a metric-compatible MS PGothic clone (Shinonome-derived,
+ * effectively public domain — see resources/fonts/MONA-LICENSE.txt), so it is
+ * the intended substitute rather than an arbitrary CJK font. Registering these
+ * means a game asking for a font no non-Windows host has will still render. */
+static const char *krkr_ms_alias_names[] = {
+	"\xEF\xBC\xAD\xEF\xBC\xB3 \xE3\x82\xB4\xE3\x82\xB7\xE3\x83\x83\xE3\x82\xAF",   // ＭＳ ゴシック
+	"\xEF\xBC\xAD\xEF\xBC\xB3\xEF\xBC\xB0\xE3\x82\xB4\xE3\x82\xB7\xE3\x83\x83\xE3\x82\xAF", // ＭＳＰゴシック
+	"MS Gothic", "MS PGothic", "MS UI Gothic", "MSGothic", "MSPGothic",
+	"\xEF\xBC\xAD\xEF\xBC\xB3 \xE6\x98\x8E\xE6\x9C\x9D",                            // ＭＳ 明朝
+	"MS Mincho", "MS PMincho", "MSMincho",
+	/* The engine's own default (see TVPGetDefaultFontName) is a hardcoded
+	 * system face name. Alias it too, or a host without that font throws
+	 * "Font ... cannot be used" the first time any text renders. */
+	"Noto Sans CJK JP", "Noto Sans CJK SC", "Noto Sans CJK TC",
+	"Noto Sans JP", "Noto Sans Mono CJK JP",
+	NULL
+};
+
+/* Load the font bundled with this build (shipped next to the engine data) and
+ * alias the Windows face names onto it. Called before the system font scan so
+ * system fonts still take precedence when they exist. */
+static void TVPLoadBundledFont() {
+	/* Environment override, then the packaged location. The core sets
+	 * KRKRSDL2_DATA_PATH; the font ships beside overrides.txt. */
+	const char *dir = getenv("KRKRSDL2_DATA_PATH");
+	std::string candidates[3];
+	if (dir && *dir) candidates[0] = std::string(dir) + "/mona.ttf";
+	candidates[1] = "/usr/share/krkrsdl2/mona.ttf";
+	const char *envfont = getenv("KRKRSDL2_FALLBACK_FONT");
+	if (envfont && *envfont) candidates[2] = envfont;
+
+	for (int i = 0; i < 3; i++) {
+		if (candidates[i].empty()) continue;
+		FILE *probe = fopen(candidates[i].c_str(), "rb");
+		if (!probe) continue;
+		fclose(probe);
+		try {
+			std::vector<tjs_string> faces;
+			TVPAddSystemFontToFreeType(candidates[i], &faces);
+			for (int a = 0; krkr_ms_alias_names[a]; a++) {
+				tjs_string alias;
+				TVPUtf8ToUtf16(alias, std::string(krkr_ms_alias_names[a]));
+				for (size_t f = 0; f < faces.size(); f++)
+					TVPAddFaceAliasToFreeType(faces[f], alias);
+			}
+			fprintf(stderr, "krkr fonts: bundled '%s' registered (%zu face(s)), MS names aliased\n",
+			        candidates[i].c_str(), faces.size());
+		} catch (...) {
+			fprintf(stderr, "krkr fonts: failed to register '%s'\n", candidates[i].c_str());
+		}
+		return;
+	}
+}
+
 static bool krkr_system_fonts_loaded = false;
+
+/* Register every system font the host provides, then the bundled fallback.
+ * Discovery lives in FontDiscovery.cpp (fontconfig on Linux/BSD, else a
+ * portable directory walk); this function only feeds the results to FreeType. */
 static void TVPLoadSystemFonts() {
 	if (krkr_system_fonts_loaded) return;
 	krkr_system_fonts_loaded = true;
-	const char* home = getenv("HOME");
-	std::string home_fonts = home ? (std::string(home) + "/.fonts") : std::string();
-	std::string home_local_fonts = home ? (std::string(home) + "/.local/share/fonts") : std::string();
-	const char* dirs[] = {
-		"/usr/share/fonts", "/usr/local/share/fonts",
-		home_fonts.empty() ? nullptr : home_fonts.c_str(),
-		home_local_fonts.empty() ? nullptr : home_local_fonts.c_str(),
-		nullptr
-	};
-	for (int d = 0; dirs[d]; d++) {
-		std::string cmd = "find \"";
-		cmd += dirs[d];
-		cmd += "\" -name '*.ttf' -o -name '*.ttc' -o -name '*.otf' 2>/dev/null";
-		FILE* fp = popen(cmd.c_str(), "r");
-		if (!fp) continue;
-		char line[4096];
-		while (fgets(line, sizeof(line), fp)) {
-			size_t len = strlen(line);
-			if (len > 0 && line[len-1] == '\n') line[--len] = '\0';
-			if (len > 0) {
-				try { TVPAddSystemFontToFreeType(std::string(line), nullptr); } catch(...) {}
-			}
-		}
-		pclose(fp);
+	TVPLoadBundledFont();
+
+	std::vector<std::string> files = TVPListFontFiles();
+	for (size_t i = 0; i < files.size(); i++) {
+		try { TVPAddSystemFontToFreeType(files[i], nullptr); } catch (...) {}
 	}
+	fprintf(stderr, "krkr fonts: %zu system font file(s) registered\n", files.size());
 }
 void TVPGetAllFontList(std::vector<tjs_string>& list) {
 	TVPLoadSystemFonts();
@@ -3624,7 +3999,21 @@ const tjs_char *TVPGetDefaultFontName()
 {
 	if (!TVPGetCommandLine(TJS_W("-deffont"), nullptr))
 	{
-		TVPSetCommandLine(TJS_W("-deffont"), TJS_W("Noto Sans CJK JP"));
+		/* Default face when the game (or the command line) does not name one.
+		 * Historically this was the hardcoded string "Noto Sans CJK JP", which
+		 * only resolves on a host that has that font — elsewhere the first
+		 * text render threw "Font ... cannot be used" and nothing drew. The
+		 * bundled face is now the default (registered and MS-aliased at
+		 * startup), and KRKRSDL2_DEFAULT_FONT overrides it for a host that
+		 * prefers its own. */
+		const char *env = getenv("KRKRSDL2_DEFAULT_FONT");
+		if (env && *env) {
+			tjs_string def;
+			TVPUtf8ToUtf16(def, std::string(env));
+			TVPSetCommandLine(TJS_W("-deffont"), def.c_str());
+		} else {
+			TVPSetCommandLine(TJS_W("-deffont"), TJS_W("Mona"));
+		}
 	}
 	static tjs_int ArgumentGeneration = 0;
 	if (ArgumentGeneration != TVPGetCommandLineArgumentGeneration())

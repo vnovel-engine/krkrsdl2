@@ -30,6 +30,8 @@
 #include "DebugIntf.h"
 #include "MsgIntf.h"
 #include "ScriptMgnIntf.h"
+#include "CompatProfile.h"
+#include "DebugFlags.h"
 #include "tjsError.h"
 #include "PluginImpl.h"
 #include "SystemIntf.h"
@@ -120,6 +122,9 @@ static MemoryLeaksDebugBreakPoint gMemoryLeaksDebugBreakPoint;
 
 #ifndef _WIN32
 #include <unistd.h>
+#else
+/* getcwd() is under the "oldnames" compatibility names on mingw. */
+#include <direct.h>
 #endif
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -466,14 +471,64 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 		if(TVPCheckProcessLog()) return true; // sub-process for processing object hash map log
 #endif
 
+		/* Engine-compatibility switches, applied before the scripting engine
+		 * initialises. Two reasons the order matters and this is the place:
+		 * `classvar` is read while script is *compiled*, so it has to be set
+		 * before any script runs; and `evalcontext`/`unaryaster` are resolved
+		 * by TVPInitScriptEngine just below, which reads whichever value is in
+		 * place at that moment. Anything set after this point would apply to
+		 * some scripts and not others.
+		 *
+		 * The spec can come from four places, highest precedence first: the
+		 * per-run spec (KRKRSDL2_COMPAT), a per-game user override
+		 * (KRKRSDL2_COMPAT_<id>), the per-game table keyed by the game's
+		 * identity, and finally TVP_COMPAT_DEFAULT_LEVEL. TVPCompatResolve
+		 * applies exactly that order and says which source won, so a host only
+		 * has to supply the identity.
+		 *
+		 * The identity comes from the game's own data file, computed by the
+		 * host while it holds the game information (the core, in
+		 * retro_load_game) and exported in KRKRSDL2_GAME_ID: it is the crc32 of
+		 * data.xp3, the same value tools/hash-game.py records in dat/vnovel.dat.
+		 * A host that supplies none leaves the two per-game sources out and the
+		 * game resolves to the default - which is the documented last resort,
+		 * not an error. */
+		/* Every source starts from the default era, never from empty.
+		 *
+		 * Basis: an empty mask means "this tree's defaults", which for a title
+		 * written for an older engine is a broken screen - and it is not
+		 * distinguishable from "no spec was given". Starting from the default
+		 * era and letting the spec adjust it makes every partial spec compose
+		 * the way it reads: `layershims=off` turns one switch off and leaves the
+		 * rest of the era intact, instead of producing an empty mask because the
+		 * spec named no level. Naming a level still replaces the whole set
+		 * (`modern` clears; `2.19` ORs its own bits in). */
+		{
+			const char *game_id = getenv("KRKRSDL2_GAME_ID");
+			TVPCompatMask mask = TVPCompatResolve(game_id, NULL);
+			TVPApplyCompatMask(mask);
+		}
+
+		/* State the live diagnostic probes, once, before anything else can
+		 * print. Answers "why did I get no output" without reading the source,
+		 * and is the one place a mistyped probe name becomes visible. */
+		krkrsdl2_debug_describe();
+
 		TVPInitScriptEngine();
 		engine_init = true;
+
+		/* Publish the resolved switches as TJS globals now that the scripting
+		 * engine exists, and before any script runs: the polyfill's own shims
+		 * load further down and may branch on them. */
+		TVPExposeCompatToScript();
 
 		// banner
 		TVPAddImportantLog( TVPFormatMessage(TVPProgramStartedOn, TVPGetOSName(), TVPGetPlatformName()) );
 
 		// Load plugins before base systems (XP3 filter must be set
 		// before data.xp3 archive is opened in SysInitImpl)
+		extern void TVPInstallBuiltinPlugins(void);
+		TVPInstallBuiltinPlugins(); // engine-provided filter, always live
 #ifndef TVP_IGNORE_LOAD_TPM_PLUGIN
 		TVPLoadPluigins(); // load plugin module *.tpm
 #endif

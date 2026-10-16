@@ -44,6 +44,34 @@ option(KRKRSDL2_EMSCRIPTEN_ENABLE_THREADS "Enable threads for the Emscripten bui
 option(KRKRSDL2_EMSCRIPTEN_ENABLE_SOURCE_MAPS "Enable threads for the Emscripten build." OFF)
 set(KRKRSDL2_EMSCRIPTEN_INITIAL_MEMORY "134217728" CACHE STRING "Initial memory usage for the Emscripten build.")
 option(KRKRSDL2_BUILD_ENABLE_WARNINGS "Enable warnings when building the project." OFF)
+# Build as the engine module of the onscripter-en libretro core: the core's
+# engine_kirikiri_cabi.cpp expects an unversioned library named
+# onscripter-en_engine_krkrsdl2.<ext>, loaded by path at run time. This is OFF
+# by default so a plain checkout builds upstream's standalone application
+# unchanged; our libretro build turns it on explicitly
+# (-DKRKRSDL2_LIBRETRO=ON). Turning it on also defines KRKRSDL2_LIBRETRO, which
+# switches the SDL2 backend to the captured-audio/silent-device path the core
+# needs (extern "C" control entry points, ring-buffer audio, dummy video).
+option(KRKRSDL2_LIBRETRO "Build as a libretro core engine module" OFF)
+if(KRKRSDL2_LIBRETRO)
+add_compile_definitions(KRKRSDL2_LIBRETRO)
+endif()
+
+# Compiled-in plugin shims (src/core/base/sdl2/BuiltinShims.h). ON lets
+# overrides.txt name a shim as `@builtin:<name>` and have it resolved inside the
+# engine instead of dlopen'ing a file, so the shim travels with the binary and
+# cannot be the wrong architecture or absent. The libretro build turns it on;
+# a standalone build may too, so it is not derived from KRKRSDL2_LIBRETRO.
+option(KRKRSDL2_BUILTIN_SHIMS "Compile the plugin shims into the engine" OFF)
+if(KRKRSDL2_BUILTIN_SHIMS)
+add_compile_definitions(KRKRSDL2_BUILTIN_SHIMS)
+endif()
+
+# mingw: prefix holding the static libogg/libvorbis the Windows DLL links
+# (built by tools/build-mingw-vorbis.sh). Kept as a variable rather than a
+# hardcoded /tmp path so a clean machine can place it anywhere.
+set(KRKRSDL2_MINGW_VORBIS_PREFIX "" CACHE PATH
+	"Prefix with the static libogg/libvorbis built for mingw (tools/build-mingw-vorbis.sh). Empty means <repo>/build/mingw-deps/vorbis, which is where that script installs by default.")
 
 if((NOT DEFINED CMAKE_BUILD_TYPE) OR (NOT CMAKE_BUILD_TYPE) OR (CMAKE_BUILD_TYPE STREQUAL ""))
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
@@ -185,6 +213,16 @@ list(APPEND KRKRSDL2_DEFINITIONS
 	PNG_ARM_NEON_OPT=0
 )
 
+# Build stamp, printed by krkrsdl2_pre_init_platform so a log proves which
+# module binary is loaded. Bump it on any engine change. Can be overridden from
+# the command line (-DKRKRSDL2_BUILD_STAMP=...) by a packaging recipe.
+if(NOT DEFINED KRKRSDL2_BUILD_STAMP)
+set(KRKRSDL2_BUILD_STAMP "dev")
+endif()
+list(APPEND KRKRSDL2_DEFINITIONS
+	ENGINE_BUILD_STAMP="${KRKRSDL2_BUILD_STAMP}"
+)
+
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
 list(APPEND KRKRSDL2_LDFLAGS
 	-sDISABLE_EXCEPTION_CATCHING=0
@@ -279,10 +317,35 @@ list(APPEND KRKRSDL2_LIBS
 )
 endif()
 
-# Ogg Vorbis decoding (wuvorbis.dll equivalent) via the system libvorbisfile.
+# Ogg Vorbis decoding (wuvorbis.dll equivalent) via libvorbisfile.
 # Enabled only when the library is available; VorbisCodecDecoder.cpp compiles
-# to nothing otherwise and TVPCreateWaveDecoder simply won't offer .ogg.
+# to nothing otherwise and TVPCreateWaveDecoder simply won't offer .ogg — which
+# is what made KiriKiri BGM silent: the Windows build had no vorbis at all.
 if(NOT (${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten"))
+if(MINGW)
+# Windows: vorbis is looked up in the prefix built by
+# tools/build-mingw-vorbis.sh, not via pkg-config (the cross pkg-config does
+# not see it). Direct paths, not find_path/find_library: the mingw toolchain
+# sets CMAKE_FIND_ROOT_PATH_MODE_{INCLUDE,LIBRARY} ONLY, which re-roots those
+# searches and would reject a prefix outside the sysroot. The libraries
+# themselves are appended to the single static section in _MIN_STATIC below.
+#
+# An empty setting means the in-tree default, so a plain configure works and a
+# reboot cannot silently disable the decoder (the old /tmp default did exactly
+# that).
+if(KRKRSDL2_MINGW_VORBIS_PREFIX STREQUAL "")
+set(KRKRSDL2_MINGW_VORBIS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../../build/mingw-deps/vorbis")
+endif()
+set(_vorbis_inc "${KRKRSDL2_MINGW_VORBIS_PREFIX}/include")
+if(EXISTS "${_vorbis_inc}/vorbis/vorbisfile.h"
+   AND EXISTS "${KRKRSDL2_MINGW_VORBIS_PREFIX}/lib/libvorbisfile.a")
+list(APPEND KRKRSDL2COMMON_INCLUDES ${_vorbis_inc})
+list(APPEND KRKRSDL2_DEFINITIONS TVP_VORBIS_DECODER_IMPLEMENT)
+message(STATUS "krkrsdl2: Ogg Vorbis decoder enabled (${KRKRSDL2_MINGW_VORBIS_PREFIX})")
+else()
+message(STATUS "krkrsdl2: Ogg Vorbis NOT available in ${KRKRSDL2_MINGW_VORBIS_PREFIX} (build it with tools/build-mingw-vorbis.sh)")
+endif()
+else()
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
 pkg_check_modules(VORBISFILE QUIET IMPORTED_TARGET vorbisfile)
@@ -294,7 +357,30 @@ list(APPEND KRKRSDL2_DEFINITIONS
 	TVP_VORBIS_DECODER_IMPLEMENT
 )
 message(STATUS "krkrsdl2: Ogg Vorbis decoder enabled (libvorbisfile ${VORBISFILE_VERSION})")
+else()
+message(STATUS "krkrsdl2: Ogg Vorbis decoder NOT available (no vorbisfile)")
 endif()
+endif()
+endif()
+endif()
+
+# Font discovery via fontconfig (Linux/BSD): the system's own font database, so
+# user/distribution font directories, aliases and substitutions are honoured
+# without a hardcoded path list. Optional — without it the portable directory
+# walk in FontDiscovery.cpp is used instead.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+pkg_check_modules(FONTCONFIG QUIET IMPORTED_TARGET fontconfig)
+if(FONTCONFIG_FOUND)
+list(APPEND KRKRSDL2_LIBS
+	PkgConfig::FONTCONFIG
+)
+list(APPEND KRKRSDL2_DEFINITIONS
+	KRKRSDL2_HAVE_FONTCONFIG
+)
+message(STATUS "krkrsdl2: font discovery via fontconfig ${FONTCONFIG_VERSION}")
+else()
+message(STATUS "krkrsdl2: fontconfig not found; using directory scan for fonts")
 endif()
 endif()
 
@@ -307,6 +393,34 @@ endif()
 if(NOT (${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten"))
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
+if(MINGW)
+# Archival build: the Windows DLL must be self-contained. Linking an import
+# library instead would make krkrsdl2.dll import libfreetype-6.dll (and, through
+# it, zlib/bzip2/brotli), adding DLLs the package has to ship. So the whole
+# non-system closure is resolved from static archives.
+#
+# The flags are gathered in _MIN_STATIC and appended ONCE, after the targets
+# (see below). Two reasons they cannot be spread across the per-library blocks:
+#  - CMake emits a target's PUBLIC link libraries more than once, which breaks
+#    the -Bstatic / -Bdynamic pairing: the later copy falls inside a -Bdynamic
+#    region and silently resolves the import library instead. That is exactly
+#    how libstdc++-6.dll / libwinpthread-1.dll crept back into the imports.
+#  - ld matches left to right, so every static archive and the compiler
+#    runtime must appear after everything that references them.
+# vorbis (the -L path comes from pkg-config) and the shared libs' private deps
+# are covered here too; onscripter-en learned the same ordering rule.
+# pkg_check_modules must run FIRST: it is what populates the *_LDFLAGS used below.
+pkg_check_modules(FREETYPE2 QUIET IMPORTED_TARGET freetype2)
+if(NOT FREETYPE2_FOUND)
+message(FATAL_ERROR "krkrsdl2: system freetype2 not found (required)")
+endif()
+list(APPEND KRKRSDL2COMMON_INCLUDES ${FREETYPE2_INCLUDE_DIRS})
+message(STATUS "krkrsdl2: FreeType ${FREETYPE2_VERSION} (system, static)")
+list(APPEND _MIN_STATIC
+	-L${KRKRSDL2_MINGW_VORBIS_PREFIX}/lib -lvorbisfile -lvorbis -logg
+	${FREETYPE2_STATIC_LDFLAGS} -lwinpthread -lstdc++
+)
+else()
 pkg_check_modules(FREETYPE2 QUIET IMPORTED_TARGET freetype2)
 if(FREETYPE2_FOUND)
 list(APPEND KRKRSDL2_LIBS
@@ -315,6 +429,7 @@ list(APPEND KRKRSDL2_LIBS
 message(STATUS "krkrsdl2: FreeType ${FREETYPE2_VERSION} (system)")
 else()
 message(FATAL_ERROR "krkrsdl2: system freetype2 not found (required)")
+endif()
 endif()
 endif()
 endif()
@@ -347,6 +462,17 @@ list(APPEND KRKRSDL2_LDFLAGS
 	-municode
 	-Wl,--subsystem,windows
 )
+# Export the standalone libretro ABI under mingw. Besides defining the exports,
+# the .def sidesteps a PE limit: --export-all-symbols over a -static link
+# (~23k symbols after --exclude-libs) overflows the ordinary export table and
+# ld falls back to a low-ordinal VMA layout, pushing the image's base past the
+# 32-bit DLL address limit (0x7fffffff). A bounded list keeps the image loadable
+# and documents the core↔engine contract in one reviewable file.
+if(MINGW)
+list(APPEND KRKRSDL2_LDFLAGS
+	-Wl,${CMAKE_CURRENT_SOURCE_DIR}/src/config/onscripter-en_engine_krkrsdl2.def
+)
+endif()
 list(APPEND KRKRSDL2_LIBS
 	uuid
 	mpr
@@ -649,6 +775,19 @@ add_library(${KRKRSDL2_NAME} SHARED)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "main")
 else()
 add_library(${KRKRSDL2_NAME} SHARED)
+if(KRKRSDL2_LIBRETRO)
+# As a libretro engine module the name is a contract with the core:
+# KRKR_ENGINE_SONAME in engine_kirikiri_cabi.cpp loads
+# onscripter-en_engine_krkrsdl2.<ext> by path. The name is unversioned and,
+# on PE, unprefixed, so it is exactly that string. Only a libretro build
+# gets it; upstream's standalone names (tvpwin32/tvpwin64, krkrsdl2, main)
+# are unchanged otherwise.
+set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "onscripter-en_engine_krkrsdl2")
+# No "lib" prefix, matching the core's other engine modules
+# (onscripter-en_engine_ons.so / _pons.so): the name is a contract, identical
+# in shape across platforms.
+set_target_properties(${KRKRSDL2_NAME} PROPERTIES PREFIX "")
+elseif(NOT ANDROID)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "krkrsdl2")
 if(WIN32)
 if("${CMAKE_SIZEOF_VOID_P}" STREQUAL "8")
@@ -656,8 +795,7 @@ set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "tvpwin64")
 else()
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "tvpwin32")
 endif()
-else()
-set_target_properties(${KRKRSDL2_NAME} PROPERTIES OUTPUT_NAME "krkrsdl2")
+endif()
 endif()
 endif()
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -666,12 +804,21 @@ endif()
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES C_STANDARD 11)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES CXX_STANDARD 14)
 target_sources(${KRKRSDL2_NAME} PRIVATE ${KRKRSDL2_SRC})
+# ENABLE_EXPORTS adds --export-all-symbols on PE, which would override the .def
+# on mingw; leave it to the platforms that do not pass an explicit export list.
+if(NOT MINGW)
 set_target_properties(${KRKRSDL2_NAME} PROPERTIES ENABLE_EXPORTS ON)
+endif()
 target_include_directories(${KRKRSDL2_NAME} PUBLIC ${KRKRSDL2_INCLUDES})
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.13.0")
 target_link_options(${KRKRSDL2_NAME} PUBLIC ${KRKRSDL2_LDFLAGS})
 endif()
 target_link_libraries(${KRKRSDL2_NAME} ${KRKRSDL2_LIBS})
+if(MINGW AND _MIN_STATIC)
+# One -Bstatic region for the entire non-system closure, last on the command
+# line so every reference above resolves from an archive. See _MIN_STATIC.
+target_link_libraries(${KRKRSDL2_NAME} -Wl,-Bstatic ${_MIN_STATIC} -Wl,-Bdynamic)
+endif()
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.16.0")
 if(KRKRSDL2_ENABLE_PRECOMPILED_HEADERS)
 target_precompile_headers(${KRKRSDL2_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core/sdl2/SDLPrecompiledHeader.h)

@@ -16,14 +16,10 @@ writing; `git merge-base HEAD upstream/HEAD` reproduces it.
 
 ## Local commits on top of the fork point
 
-```
-f7555eb  krkrsdl2: SDL2/libretro port fixes for KiriKiri games
-d63aa47  Application: pace the engine main loop (fix unbounded frame rate)
-efe5c7c  build: link system FreeType instead of vendored 2.6.3
-69d0d9a  build: OPTION_DEBUG_PROBES to enable the ad-hoc stderr probes (default OFF)
-08c2382  krkrz: bump submodule (probes gated behind TVP_DEBUG_PROBES)
-9882776  libretro: composite modal windows into the primary frame
-```
+Recorded in [`CHANGELOG.md`](CHANGELOG.md) (by subject, with rationale) rather
+than by hash: our commit ids go stale on any history rewrite, and upstream is
+the only lineage that needs a fixed point. `git log 124bdf8..HEAD` is
+authoritative for the current list.
 
 ## Submodules and their forks
 

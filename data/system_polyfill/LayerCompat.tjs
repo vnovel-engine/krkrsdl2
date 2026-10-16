@@ -19,8 +19,6 @@ Layer.stretchPile = function(dleft, dtop, dwidth, dheight, src, sleft, stop, swi
 	this.operateStretch(dleft, dtop, dwidth, dheight, src, sleft, stop, swidth, sheight, omAlpha, opa, type);
 };
 
-function Stretch(arg) {
-	arg.dest.operateStretch(arg.dleft, arg.dtop, arg.dwidth, arg.dheight, arg.src,
-		arg.sleft, arg.stop, arg.swidth, arg.sheight, omAlpha,
-		arg.opa !== void ? arg.opa : 255, 0);
-}
+/* The Stretch(arg) property-bag helper used to live here. It is not an obsolete
+ * Layer method, so it moved to Util.tjs, which loads unconditionally - keeping
+ * it here meant disabling this shim removed a function the game needs. */

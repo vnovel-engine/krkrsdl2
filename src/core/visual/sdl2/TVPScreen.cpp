@@ -9,26 +9,25 @@
 #include "DebugIntf.h"
 #include "MsgIntf.h"
 
+#ifdef KRKRSDL2_LIBRETRO
+/* Set by the libretro core (krkr_set_resolution) to the external resolution the
+ * frontend expects. Reported through System.screenWidth/screenHeight so an
+ * engine/script that lays itself out from the screen size renders natively at
+ * the target instead of the host display's size. 0 means "not forced". */
+extern "C" int krkrsdl2_forced_width;
+extern "C" int krkrsdl2_forced_height;
+#endif
+
 int tTVPScreen::GetWidth() {
-#if 0
-	HMONITOR hMonitor = ::MonitorFromWindow( Application->GetMainWindowHandle(), MONITOR_DEFAULTTOPRIMARY );
-	MONITORINFO monitorinfo = {sizeof(MONITORINFO)};
-	if( ::GetMonitorInfo( hMonitor, &monitorinfo ) != FALSE ) {
-		return monitorinfo.rcMonitor.right - monitorinfo.rcMonitor.left;
-	}
-	return ::GetSystemMetrics(SM_CXSCREEN);
+#ifdef KRKRSDL2_LIBRETRO
+	if (krkrsdl2_forced_width > 0) return krkrsdl2_forced_width;
 #endif
 	SDL_Rect r;
 	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.w;
 }
 int tTVPScreen::GetHeight() {
-#if 0
-	HMONITOR hMonitor = ::MonitorFromWindow( Application->GetMainWindowHandle(), MONITOR_DEFAULTTOPRIMARY );
-	MONITORINFO monitorinfo = {sizeof(MONITORINFO)};
-	if( ::GetMonitorInfo( hMonitor, &monitorinfo ) != FALSE ) {
-		return monitorinfo.rcMonitor.bottom - monitorinfo.rcMonitor.top;
-	}
-	return ::GetSystemMetrics(SM_CYSCREEN);
+#ifdef KRKRSDL2_LIBRETRO
+	if (krkrsdl2_forced_height > 0) return krkrsdl2_forced_height;
 #endif
 	SDL_Rect r;
 	return SDL_GetDisplayUsableBounds(0, &r) ? 0 : r.h;

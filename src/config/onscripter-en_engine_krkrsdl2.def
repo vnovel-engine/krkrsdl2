@@ -1,0 +1,51 @@
+; krkrsdl2 standalone DLL: the exported libretro ABI.
+;
+; The core (onscripter-en) loads this DLL with LoadLibrary and resolves each
+; name below with GetProcAddress, so every one is load-bearing. It is a fixed
+; contract between the two repositories — do not remove or rename an entry
+; without changing engine_kirikiri_cabi.cpp in lockstep.
+;
+; Why an explicit list and not --export-all-symbols: the Windows build links
+; -static, which implies --exclude-libs,ALL, so a blanket export of the engine
+; archive yields nothing; removing --exclude-libs would instead dump the whole
+; statically linked SDL2/FAudio/FreeType surface (tens of thousands of symbols)
+; into a 75 MB DLL. This list is the actual interface.
+;
+; The mangled C++ names are Itanium ABI; mingw-w64 uses it, matching the core's
+; dlsym() strings on every platform. This DLL must therefore be built with a
+; GCC-compatible compiler; MSVC's mangling would not match.
+EXPORTS
+    ; --- lifecycle / platform (Itanium-mangled C++ member-free functions) ---
+    _Z26krkrsdl2_pre_init_platformv
+    _Z22krkrsdl2_init_platformv
+    _Z22krkrsdl2_run_main_loopv
+    _Z16krkrsdl2_cleanupv
+    _Z25krkrsdl2_convert_set_argsiPPc
+
+    ; --- restart / quit ---
+    krkrsdl2_prepare_restart
+    krkrsdl2_request_quit
+
+    ; --- per-frame control from the core ---
+    krkr_set_clock
+    krkr_set_fastforward
+    krkr_notify_poll
+    krkr_set_resolution
+
+    ; --- published state (addresses handed to the core by dlsym) ---
+    SDL_libretro_surface
+    SDL_libretro_surface_updated
+    krkrsdl2_auto_mode
+    krkrsdl2_engine_stopped
+
+    ; --- audio capture ring buffer (written by the FAudio SDL2 mixer) ---
+    SDL_libretro_audio_buf
+    SDL_libretro_audio_write
+    SDL_libretro_audio_read
+    SDL_libretro_audio_capacity
+    SDL_libretro_audio_freq
+
+    ; --- input injection: the core queues SDL2 events through the engine's own
+    ; SDL2 (the vendored copy lives inside this DLL, so the host process has no
+    ; other SDL2 to find). ---
+    SDL_PushEvent

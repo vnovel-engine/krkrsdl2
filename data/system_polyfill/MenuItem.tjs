@@ -1,26 +1,136 @@
-﻿// MenuItem.tjs — stub for platforms without native window menus.
-// On Windows MenuItem/Menu are native classes; here they are pure script.
-class MenuItem {
-	function MenuItem(parent, cap) { caption = cap; }
-	function add(item) { return item; }
-	function remove(item) {}
-	function clear() {}
-	function check(c) { checked = c; }
-	function enable(e) { enabled = e; }
+﻿// MenuItem.tjs — the menu items KAG's scripts build, without a native menu.
+//
+// On Windows MenuItem and Menu are native classes provided by the engine, and
+// the menu is the window's own title-bar menu. There is no such thing here, so
+// these are script classes with the same shape. The game
+// (system/Menus.tjs) subclasses this:
+//
+//     class KAGMenuItem extends MenuItem
+//     {
+//         function finalize()        { ...; super.finalize(...); }
+//         property enabled           { getter {...} setter(x) { ...; super.enabled = ...; } }
+//         function onClick()         { super.onClick(...); click(); }
+//     }
+//
+// so the members it relies on are not optional: `super.finalize`, `super.onClick`
+// and `super.enabled` as a settable *property*. The previous version of this
+// file defined none of them, which would fail the moment a menu item was clicked
+// or destroyed - latent rather than immediate, because Fate's own menus are
+// built but not exercised until the user opens one.
+//
+// What this is NOT: a replacement for the native menu. The vendored NP2kai menu
+// (deps/np2kai-menu, driven by src/menu.cpp) is that, and binding these items to
+// it - so `menu.add` creates a real menu entry and `onClick` fires from it - is
+// the remaining work. Until then these are a well-formed in-memory tree that the
+// game can build and query without erroring, which is what it needs to run.
+
+class MenuItem
+{
+	function MenuItem(parent, cap)
+	{
+		caption = cap;
+		/* `parent` is the window the item belongs to, NOT a container: the game
+		 * does `menu.add(item = new KAGMenuItem(this, ...))`, adding explicitly.
+		 * So this must not call parent.add - a window has no such method, and
+		 * doing so throws during menu construction. */
+		owner = parent;
+	}
+
+	// Called when the item is destroyed. KAGMenuItem's finalize deletes its own
+	// fields and then chains here, so this must exist and must tolerate being
+	// called with `...` (no arguments).
+	function finalize()
+	{
+		children = void;
+	}
+
+	// A click on the item. KAGMenuItem chains here before running its command,
+	// so this is the base behaviour: nothing. A bound native menu would route
+	// its selection event to this.
+	function onClick()
+	{
+	}
+
+	// Programmatic click, used by KAGMenuItem::click for a `command` that is a
+	// TJS function or a string to eval.
+	function click()
+	{
+		onClick();
+	}
+
+	/* `enabled` is a property, not a field: KAGMenuItem overrides it and its
+	 * setter assigns to `super.enabled`, which only works if the base class
+	 * declares a property of that name. Declaring it as `var` here made that
+	 * assignment fail. */
+	property enabled
+	{
+		getter { return _enabled; }
+		setter(x) { _enabled = x; }
+	}
+
+	function add(item)
+	{
+		if(children === void)
+			children = [];
+		children.add(item);
+		return item;
+	}
+
+	function remove(item)
+	{
+		if(children !== void)
+			children.remove(item);
+	}
+
+	function clear()
+	{
+		if(children !== void)
+			children.clear();
+	}
+
+	function check(c)
+	{
+		checked = c;
+	}
+
 	var caption = "";
 	var checked = false;
-	var enabled = true;
 	var visible = true;
 	var group = 0;
 	var radio = false;
 	var children = [];
+	var _enabled = true;
+	/* The window this item belongs to; KAGMenuItem also assigns its own
+	 * `owner`, so this is the base-class default it overwrites. */
+	var owner = void;
 }
 
-class Menu {
-	function Menu(parent) {}
-	function add(item) { return item; }
-	function clear() {}
-	function popup(x, y) {}
+class Menu
+{
+	function Menu(parent)
+	{
+	}
+
+	function add(item)
+	{
+		if(children === void)
+			children = [];
+		children.add(item);
+		return item;
+	}
+
+	function clear()
+	{
+		if(children !== void)
+			children.clear();
+	}
+
+	// Attaching this to the native menu is the remaining work; a no-op keeps a
+	// caller that opens the menu from failing.
+	function popup(x, y)
+	{
+	}
+
 	var children = [];
 }
 

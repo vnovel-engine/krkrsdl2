@@ -4,6 +4,7 @@ src/core/msg/sdl2
 src/core/sdl2
 src/core/sound/sdl2
 src/core/utils/sdl2
+src/core/visual
 src/core/visual/sdl2
 external
 external/krkrz

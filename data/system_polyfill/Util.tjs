@@ -1,3 +1,24 @@
 ﻿// Util.tjs — small file/system utilities the engine lacks natively.
+
+/* IME toggle, called unguarded by Fate's scenario/SaveLoadMenuLayer.tjs
+ * (enabledIME(false) in hide()). It exists in neither krkrsdl2 nor the
+ * pre-2.23 engine this shim set covers, so the call decides whether the save
+ * screen can close at all. There is no IME to drive on a libretro core, so on
+ * is a no-op; the function exists to be callable, not to do anything. */
+function enabledIME(b) {}
+
+/* Convenience wrapper over Layer.operateStretch, taking one property bag. Not
+ * obsolete engine API and not era-specific: Fate's scenario/DashPlugin.ks calls
+ * it directly (Stretch(%[src:..,dest:..,dleft:..,...])). It lived in
+ * LayerCompat.tjs, which is gated as the obsolete-Layer shim, so turning that
+ * shim off took this with it and the game died with
+ * `Member "Stretch" does not exist` - the wrapper has nothing to do with the
+ * obsolete methods it happened to share a file with. */
+function Stretch(arg) {
+	arg.dest.operateStretch(arg.dleft, arg.dtop, arg.dwidth, arg.dheight, arg.src,
+		arg.sleft, arg.stop, arg.swidth, arg.sheight, omAlpha,
+		arg.opa !== void ? arg.opa : 255, 0);
+}
+
 function GetFileSize(name) { return -1; }
 function DeleteFile(name) {}

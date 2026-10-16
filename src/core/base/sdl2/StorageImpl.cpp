@@ -34,6 +34,12 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#elif defined(__MINGW32__)
+/* mingw-w64 provides a POSIX-compatible <dirent.h> (opendir/readdir/closedir)
+ * over FindFirstFile, but its struct dirent has no d_type/DT_DIR — the entry
+ * type below is resolved with stat() on that platform. */
+#include <dirent.h>
+#include <sys/stat.h>
 #endif
 
 #if defined(__vita__)
@@ -1659,7 +1665,23 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirlist)
 #ifdef KRKRZ_CASE_INSENSITIVE
 				file.ToLowerCase();
 #endif
+#if defined(__MINGW32__)
+				/* mingw's struct dirent has no d_type; stat the joined path.
+				 * `local` is the directory being listed. */
+				bool is_dir = false;
+				{
+					struct stat st;
+					std::string full = local;
+					if (!full.empty() && full.back() != '/' && full.back() != '\\')
+						full += '/';
+					full += entry->d_name;
+					if (stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+						is_dir = true;
+				}
+				if(is_dir) file += TJS_W("/");
+#else
 				if(entry->d_type == DT_DIR) file += TJS_W("/");
+#endif
 				push(file.c_str());
 			}
 			closedir(dr);

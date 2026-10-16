@@ -53,6 +53,11 @@
 #include "TickCount.h"
 #include <SDL.h>
 #include <errno.h>
+#if defined(__MINGW32__)
+/* access()/F_OK for the data.xp3 auto-discovery below. mingw declares them in
+ * <io.h>; the POSIX <unistd.h> path on the other platforms brings them in. */
+#include <io.h>
+#endif
 #ifdef __APPLE__
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -66,6 +71,18 @@
 tjs_string TVPNativeProjectDir;
 tjs_string TVPNativeDataPath;
 bool TVPProjectDirSelected = false;
+//---------------------------------------------------------------------------
+/* Re-run project discovery for an in-process restart (libretro Reset).
+ * TVPProjectDirSelected stays true from the first run, so TVPBeforeSystemInit()
+ * would skip its data.xp3 auto-discovery and the second run never registers the
+ * game as the project — its startup.tjs then resolves to the polyfill's data/
+ * instead of the game archive, the game's Initialize.tjs never runs, and no
+ * window is created. The flag stays private to this unit; the caller sees only
+ * this function. See krkrsdl2_prepare_restart(). */
+extern "C" void krkrsdl2_reset_project_dir_selection(void)
+{
+	TVPProjectDirSelected = false;
+}
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------

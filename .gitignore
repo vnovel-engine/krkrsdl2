@@ -12,3 +12,7 @@ build
 .externalNativeBuild
 .gradle
 android-project/app/.cxx/
+
+# Code review tool
+/REVIEW.md
+/.review-history/

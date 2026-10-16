@@ -1,0 +1,63 @@
+# overrides.txt — data-driven plugin/resource overrides for the KiriKiri engine.
+#
+# Each line:  <fileName> <fileHash> <replacementFile> <needDecryption>
+#   fileName         plugin/storage base name to match, or `-`
+#   fileHash         XP3 per-file hash to match (hex), or `-`
+#   replacementFile  `-` keep the file as the game shipped it (for a plugin: the
+#                        engine answers the link itself), else one of:
+#                          * `@builtin:<name>` — a shim compiled into the engine
+#                            (src/shims/, reached through the registry in
+#                            BuiltinShims.h). Preferred: nothing to install,
+#                            no architecture to match.
+#                          * a path relative to this directory, loaded by
+#                            dlopen. It MUST match the target architecture — an
+#                            x86-64 ELF can never load on an aarch64 device.
+#   needDecryption   1 = apply the archive decryption to this file, else 0
+#
+# `#` starts a comment. Case-insensitive on the file name.
+#
+# Matching: a record matches only when every criterion it specifies is
+# satisfied by the query — an unspecified field (`-`) is a wildcard, but a
+# *specified* field that the query cannot supply does NOT match. So a record
+# with name+hash needs both; hash-only matches by hash alone; name-only by
+# name alone. Two games can therefore share a trivial file (a blank storage, a
+# one-line config whose hash collides) and still be overridden differently:
+#     player.conf  0x1a2b3c4d  A/player.conf  0   # game A -> hiro
+#     player.conf  0x9e8d7c6b  B/player.conf  0   # game B -> masa
+#
+# A plugin whose Windows PE we cannot load but whose link must succeed.
+# The behaviour, when any, is provided by the engine or the game's own scripts.
+
+# --- engine-simulated plugins (no-op successful link) ---
+fpslimit.dll      -   -   0
+addfont.dll       -   -   0
+fstat.dll         -   -   0
+layereximage.dll  -   -   0
+wuvorbis.dll      -   -   0   # engine supplies the Vorbis decoder
+adjustmoni.dll    -   -   0   # cosmetic brightness/contrast
+extrans.dll       -   @builtin:extrans   0   # transitions: mosaic and wave
+#                                  are requested by name from the scenarios
+#                                  (@prick/@prickT, @wave/@waveT). Without a
+#                                  handler StartTransition throws and the scene
+#                                  aborts, so this is not cosmetic.
+util.dll          -   -   0   # TYPE-MOON IME/window helper (Fate, unguarded link)
+slideopen.dll     -   -   0   # open/close animation (cosmetic)
+menuitem.dll      -   -   0   # native window menu class; stubbed
+drawer.dll        -   @builtin:drawer   0   # FlowChart/gallery drawing helper:
+#                                  drawLine/drawAALine/drawAATriangle rasterise
+#                                  into a Layer buffer, so a no-op link loses the
+#                                  geometry rather than degrading it.
+dirlist.dll       -   -   0   # directory listing helper (Fate gallery/flowchart)
+firespark.dll     -   @builtin:firespark   0   # spark effect (Fate), drawn into a
+#                                     Layer buffer; a no-op link would leave the
+#                                     effect simply absent.
+
+# --- archive-decryption plugin: installs the XP3 extraction filter ---
+cxdec.tpm         -   -   0   # Fate/stay night (TYPE-MOON)
+filter.dll        -   -   0   # same, other builds
+
+# --- voice patch (mirror moon / phiber) ---
+# Fate/stay night's English patch links this unguarded in Override.tjs, so a
+# failed link aborts the scene before any text is shown. The game's own TJS
+# does the voice bookkeeping; the plugin only supplied storage helpers.
+p.dll             -   -   0

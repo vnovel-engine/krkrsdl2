@@ -10,3 +10,4 @@ extern void krkrsdl2_convert_set_args(int argc, char **argv);
 extern bool krkrsdl2_init_platform(void);
 extern void krkrsdl2_run_main_loop(void);
 extern void krkrsdl2_cleanup(void);
+extern void krkrsdl2_prepare_restart(void);

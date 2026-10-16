@@ -31,6 +31,12 @@
 #endif
 #include "tjs.h"
 
+// Engine-provided replacements for game plugins (see BuiltinPlugins.cpp): a
+// plugin the engine handles itself is never loaded from disk.
+bool TVPIsBuiltinPlugin(const ttstr &name);
+void TVPInstallBuiltinPlugin(const ttstr &name);
+void TVPInstallBuiltinPlugins(void);
+
 #ifdef _WIN32
 #if 0
 #ifdef TVP_SUPPORT_OLD_WAVEUNPACKER
@@ -279,28 +285,12 @@ struct tTVPPlugin
  * try/catch and relies on the failure to set `global.Steam = void`. */
 static bool TVPIsEngineStubPlugin(const ttstr &name)
 {
-	ttstr n(name);
-	n.ToLowerCase();
-	ttstr base = TVPExtractStorageName(n);
-	static const tjs_char *stubs[] = {
-		TJS_W("fpslimit.dll"),
-		TJS_W("addfont.dll"),
-		TJS_W("fstat.dll"),
-		TJS_W("layereximage.dll"),
-		// The engine provides the actual Ogg Vorbis decoder (VorbisCodecDecoder.cpp);
-		// the plugin link itself is a harmless no-op.
-		TJS_W("wuvorbis.dll"),
-		// Screen-brightness/contrast adjustment plugin; cosmetic no-op.
-		TJS_W("adjustmoni.dll"),
-		// Transition-handler provider (mosaic/wave/...). The engine has its own
-		// transition system; the scripts' effect classes are no-ops in
-		// PluginStubs.tjs, so the link itself is a harmless success.
-		TJS_W("extrans.dll"),
-		nullptr
-	};
-	for (int i = 0; stubs[i]; i++)
-		if (base == ttstr(stubs[i])) return true;
-	return false;
+	// The list of engine-simulated plugins is the overrides table
+	// (data/overrides.txt): a record naming the plugin means the engine answers
+	// the link itself instead of loading the Windows PE. Behaviour for those
+	// that need setup is supplied in TVPInstallBuiltinPlugin(); the rest need
+	// nothing beyond a successful link.
+	return TVPIsBuiltinPlugin(name);
 }
 //---------------------------------------------------------------------------
 tTVPPlugin::tTVPPlugin(const ttstr & name, ITSSStorageProvider *storageprovider)
@@ -548,6 +538,18 @@ void TVPLoadPlugin(const ttstr & name)
 		if((*i)->Name == name) return;
 	}
 
+	// Engine-provided plugin: never touch the (Windows PE) file on disk.
+	// The loader's search path, the game directory and the system directory
+	// are all irrelevant here — the behaviour is compiled in.
+	if (TVPIsBuiltinPlugin(name))
+	{
+		std::string nm;
+		TVPUtf16ToUtf8(nm, name.AsStdString());
+		fprintf(stderr, "TVPLoadPlugin: '%s' supplied by engine (builtin)\n", nm.c_str());
+		TVPInstallBuiltinPlugin(name);
+		return;
+	}
+
 	tTVPPlugin * p;
 
 	try
@@ -628,6 +630,10 @@ static void TVPSearchPluginsAt(std::vector<tTVPFoundPlugin> &list, const tjs_str
 			tjs_string ext = name.substr(name.length() - 4);
 			if (ext == TJS_W(".tpm") || ext == TJS_W(".TPM") || ext == TJS_W(".Tpm"))
 			{
+				// A plugin the engine supplies itself is not loaded from
+				// disk: its file is a Windows PE we cannot dlopen, and the
+				// behaviour is compiled in (see TVPLoadPlugin).
+				if (TVPIsBuiltinPlugin(name)) continue;
 				tTVPFoundPlugin fp;
 				fp.Path = folder;
 				fp.Name = name;
@@ -651,6 +657,18 @@ void TVPLoadPluigins(void)
 	TVPAutoLoadPluginCount = (tjs_int)list.size();
 	for (auto i = list.begin(); i != list.end(); i++)
 	{
+#ifdef TVP_DEBUG_PROBES
+		/* Name the plugin about to be loaded. A crash inside TVPLoadPlugin
+		 * otherwise leaves no record of *which* plugin caused it, and the list
+		 * is sorted so the order is not obvious from the directory. Flushed,
+		 * because the process may die before the buffer is drained. */
+		{
+			std::string nm;
+			TVPUtf16ToUtf8(nm, i->Name);
+			fprintf(stderr, "PLUGIN-LOAD next='%s'\n", nm.c_str());
+			fflush(stderr);
+		}
+#endif
 		TVPAddImportantLog(ttstr(TJS_W("(info) Loading ")) + ttstr(i->Name));
 		TVPLoadPlugin(i->Path + i->Name);
 	}

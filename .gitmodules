@@ -9,7 +9,7 @@
 	url = https://github.com/krkrsdl2/meson_toolchains.git
 [submodule "SDL-upstream"]
 	path = external/SDL
-	url = https://github.com/libsdl-org/SDL.git
+	url = https://gitlab.com/matchaxnb/SDL.git
 [submodule "external/zlib"]
 	path = external/zlib
 	url = https://github.com/madler/zlib.git
