@@ -1,6 +1,7 @@
 [submodule "external/krkrz"]
 	path = external/krkrz
 	url = https://gitlab.com/matchaxnb/krkrz.git
+	branch = krkrsdl2
 [submodule "external/simde"]
 	path = external/simde
 	url = https://github.com/simd-everywhere/simde.git
