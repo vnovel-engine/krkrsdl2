@@ -513,15 +513,19 @@ void BoxBlurPass(Surface &s)
 			const tjs_int xl = x > 0 ? x - 1 : 0;
 			const tjs_int xr = x < s.width - 1 ? x + 1 : s.width - 1;
 
-			// Unpack and average, centre counted twice (weight 2), eight
-			// neighbours weight 1 each, total weight 8. This is exactly the
-			// original's `(*5 + n1 + n2 + n3 + n4) >> 3` shape (the *5 is
-			// centre<<2 + centre = centre*5, and >>3 divides the 8-weight
-			// sum — wait, 5+1+1+1+1 = 9, so the original divides a 9-tap
-			// sum by 8; the edge code uses *3 with six neighbours = 9/8
-			// too. The division is >>3 everywhere, so the result is a 9-tap
-			// sum divided by 8, which is a box blur with a double-weighted
-			// centre).
+			// 3x3 blur, centre weighted twice the neighbours, NORMALISED: the
+			// weight sum is divided out, so a flat field comes back unchanged.
+			//
+			// That normalisation is the property this code previously missed — it
+			// divided a 10-weight sum by 8, so Smudge brightened every flat area
+			// by 25%, visible as a wash on the Smudge and Defocus pages.
+			//
+			// The shipped filter.dll normalises too, but with its own tap sets:
+			// the scalar path (0x1000106f-0x100010ad) divides a 5/1/1/1 tap set
+			// by 8, and the MMX path (0x10001125-0x1000117e) sums eight shifted
+			// taps and applies psrlw 8. This is therefore the same KIND of
+			// filter — a normalised local average — rather than one of those two
+			// exact tap patterns.
 			const tjs_uint32 c = tmp[x];
 			const tjs_uint32 l = tmp[xl];
 			const tjs_uint32 r = tmp[xr];
@@ -548,10 +552,14 @@ void BoxBlurPass(Surface &s)
 				((ul >> 24) & 0xff) + ((um >> 24) & 0xff) + ((ur >> 24) & 0xff) +
 				((dl >> 24) & 0xff) + ((dm >> 24) & 0xff) + ((dr >> 24) & 0xff);
 
-			dst[x] = ((tjs_uint32)(a >> 3) << 24) |
-			         ((tjs_uint32)(rr >> 3) << 16) |
-			         ((tjs_uint32)(g >> 3) << 8) |
-			         (tjs_uint32)(b >> 3);
+			// Divide by the weight sum (2 + 8 = 10). Written as a
+			// division rather than a shift because 10 is not a power of two;
+			// the rounding is the compiler's (truncating) and is inside the
+			// 1-bit noise floor the original's >>3 has as well.
+			dst[x] = ((tjs_uint32)((a + 5) / 10) << 24) |
+			         ((tjs_uint32)((rr + 5) / 10) << 16) |
+			         ((tjs_uint32)((g + 5) / 10) << 8) |
+			         (tjs_uint32)((b + 5) / 10);
 		}
 	}
 
