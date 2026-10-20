@@ -1,56 +1,48 @@
 //---------------------------------------------------------------------------
 // shims/extrans.cpp — Fate/stay night's Extended Transition Plug-in, in-engine.
 //
-// What the plugin was
+// extrans.dll exports V2Link/V2Unlink only (fate-decompiled/exports/extrans.dll.md
+// §1) and adds no TJS globals or classes. It registers transition handler
+// *providers* through TVPAddTransHandlerProvider and removes them through
+// TVPRemoveTransHandlerProvider in V2Unlink. The decompiled V2Link (0x10001000)
+// stores the exporter, then makes five register calls; V2Unlink (0x10001030)
+// mirrors them.
+//
+// HANDLERS REGISTERED
 // -------------------
-// extrans.dll exports only V2Link/V2Unlink (fate-decompiled/exports/extrans.dll.md
-// §1) and does not add TJS globals or classes. What it registers are transition
-// handler *providers* with the engine, through TVPAddTransHandlerProvider, and
-// removes them symmetrically through TVPRemoveTransHandlerProvider in V2Unlink
-// (decompiled V2Link at 0x10001000: store exporter, then five register calls;
-// V2Unlink at 0x10001030 mirrors them).
+// Seven names, though V2Link makes five register calls: the call to
+// RegisterRotateTransHandlerProvider (rotatetrans.cpp:487-493) constructs and
+// registers three providers. Upstream Main.cpp:32-36 is the call list.
 //
-// Scope: why this file exists, and all seven names
-// -------------------------------------------------
-// overrides.txt currently lists extrans.dll as an engine-simulated no-op and
-// PluginStubs.tjs answers Quake/Rain/Zoom/MotionBlur/FallenLeaf. Neither covers
-// what the game actually asks for. The shipping scripts request transitions by
-// *name*:
+//   mosaic        mosaic.cpp
+//   wave          wave.cpp
+//   turn          turn.cpp (+ turntrans_table.cpp)
+//   ripple        ripple.cpp
+//   rotatezoom    rotatetrans.cpp + rotatebase.cpp
+//   rotatevanish  rotatetrans.cpp:222-316 (same handler class, FixSrc1=false)
+//   rotateswap    rotatetrans.cpp:318-475 + rotatebase.cpp
 //
-//   * `mosaic` — scenario/マクロ.ks:566-572 defines @prick/@prickT, whose body is
-//     `@trans layer=base children=true method=mosaic time=... maxsize=...`.
-//     16 call sites in the scenario files (`@prickT time=200 maxsize=20`,
-//     `@prick time=300 maxsize=40`, ...), plus @prick itself.
-//   * `wave` — マクロ.ks:927-939 defines @wave/@waveT, whose body is
-//     `@transex * method=wave`. 8 call sites (`@wave time=400 wavetype=2`, ...).
-//   * `ripple` — the reel aborts at `Cannot find transition handler ripple`,
-//     so this name is live even though it has no static call site in the
-//     scenario corpus; the @trans tag resolves it dynamically.
+// The name each provider returns from GetName is the string the KAG `@trans`
+// tag resolves by `method=`. The shipped binary's .rdata carries all seven; the
+// addresses and their bytes are tabulated in EXTRANS-HANDLERS.md, which also
+// records that the decompilation's `)turn` spelling is a UTF-16LE alignment
+// artifact (the real literal begins at 0x10033638).
 //
-// ...and the name does not resolve. KAGLayer.tjs:189-233 forwards `method` to
-// Layer.beginTransition, which reaches tTJSNI_BaseLayer::StartTransition, whose
-// first action is TVPFindTransHandlerProvider(name) (LayerIntf.cpp:6781). The
-// registry holds only the engine's own crossfade/universal/scroll
-// (TransIntf.cpp:1196-1213), so the lookup throws TVPCannotFindTransHander
-// ("Cannot find transition handler %1", src/core/msg/sdl2/MsgLoad.cpp:162).
-// Nothing in TJS catches it around the trans path, so it reaches Conductor's
-// timerCallback catch (system/Conductor.tjs:163) and aborts the scene. So the
-// no-op disposition is wrong for these names: without them the scenes die at
-// the transition.
+// HOW A NAME RESOLVES
+// -------------------
+// KAGLayer.tjs:189-233 forwards `method` to Layer.beginTransition, which reaches
+// tTJSNI_BaseLayer::StartTransition, whose first action is
+// TVPFindTransHandlerProvider(name) (LayerIntf.cpp:6781). The engine's own
+// registry holds crossfade/universal/scroll (TransIntf.cpp:1196-1213); a name
+// outside it throws TVPCannotFindTransHander ("Cannot find transition handler
+// %1", src/core/msg/sdl2/MsgLoad.cpp:162). Nothing in TJS catches it around the
+// trans path, so it reaches Conductor's timerCallback catch
+// (system/Conductor.tjs:163) and ends the scene at that tag.
 //
-// This file ports all SEVEN handlers the upstream extrans.dll registers
-// (Main.cpp:32-36 calls five Register* functions; one of them,
-// RegisterRotateTransHandlerProvider, spawns three providers —
-// rotatetrans.cpp:487-493 — so seven total):
-//
-//   mosaic, wave, turn, ripple, rotatezoom, rotatevanish, rotateswap
-//
-// Each is a faithful port of the upstream handler: mosaic from mosaic.cpp,
-// wave from wave.cpp, turn from turn.cpp (+ turntrans_table.cpp), ripple from
-// ripple.cpp, and rotatezoom/rotatevanish/rotateswap from rotatetrans.cpp +
-// rotatebase.cpp. The binary's name strings are verified in .rdata at the
-// addresses tabulated in EXTRANS-HANDLERS.md (the `)turn` artifact was a
-// Ghidra alignment error; the real name is `turn`).
+// In the scenario corpus, mosaic and wave are requested statically: `@prick`/
+// `@prickT` (マクロ.ks:566-572) emit `@trans ... method=mosaic`, and `@wave`/
+// `@waveT` (マクロ.ks:927-939) emit `@transex * method=wave`. The other five
+// have no static call site in that corpus; `@trans` resolves them dynamically.
 //
 // Two consumers (see shim_abi.h)
 // ------------------------------

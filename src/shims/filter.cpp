@@ -17,9 +17,13 @@
 //     Noise(%[layer, monocro, seed, under, upper])
 //         — fill the layer with an LCG noise field, optionally banded and
 //           optionally monochrome.
-//     Blur(%[layer, level])      — box-blur the layer `level` times.
-//     Smudge(%[layer, level])   — box-blur the layer with radius `level`.
-//     Lens(%[layer, zoom, power, x, y])
+//     Blur(%[layer, level])     — 3x3 blur applied `level` times.
+//     Smudge(%[layer, level])   — as Blur. The DLL reaches the 3x3 kernel at
+//                                 0x10001000 from 0x100038a9, inside Smudge's
+//                                 Process (0x10003670); a second call site at
+//                                 0x100034f0 lies outside both natives and
+//                                 has not been attributed.
+//     Lens(%[dest, zoom, center, power])
 //         — magnify a circular region via bilinear resampling.
 //     InitLens() / ReleaseLens()
 //         — build / free a fixed-point tan table the Lens pass uses.
@@ -513,19 +517,16 @@ void BoxBlurPass(Surface &s)
 			const tjs_int xl = x > 0 ? x - 1 : 0;
 			const tjs_int xr = x < s.width - 1 ? x + 1 : s.width - 1;
 
-			// 3x3 blur, centre weighted twice the neighbours, NORMALISED: the
-			// weight sum is divided out, so a flat field comes back unchanged.
+			// 3x3 normalised average, centre weight 2, each neighbour weight 1.
+			// The weight sum (2 + 8 = 10) is divided out, so a flat field is
+			// returned unchanged.
 			//
-			// That normalisation is the property this code previously missed — it
-			// divided a 10-weight sum by 8, so Smudge brightened every flat area
-			// by 25%, visible as a wash on the Smudge and Defocus pages.
-			//
-			// The shipped filter.dll normalises too, but with its own tap sets:
-			// the scalar path (0x1000106f-0x100010ad) divides a 5/1/1/1 tap set
-			// by 8, and the MMX path (0x10001125-0x1000117e) sums eight shifted
-			// taps and applies psrlw 8. This is therefore the same KIND of
-			// filter — a normalised local average — rather than one of those two
-			// exact tap patterns.
+			// The shipped filter.dll blurs at 0x10001000 with a per-CPU tap set:
+			// the scalar path (0x1000106f-0x100010ad) divides a centre-5,
+			// neighbours-1 kernel by 8; the MMX path (0x10001125-0x1000117e)
+			// sums eight shifted taps and applies psrlw 8. Both are normalised;
+			// neither tap pattern is reproduced here (they differ from each
+			// other, and MMX is not addressable from portable C++).
 			const tjs_uint32 c = tmp[x];
 			const tjs_uint32 l = tmp[xl];
 			const tjs_uint32 r = tmp[xr];
