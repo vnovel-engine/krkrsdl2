@@ -18,11 +18,10 @@
 //         — fill the layer with an LCG noise field, optionally banded and
 //           optionally monochrome.
 //     Blur(%[layer, level])     — 3x3 blur applied `level` times.
-//     Smudge(%[layer, level])   — as Blur. The DLL reaches the 3x3 kernel at
-//                                 0x10001000 from 0x100038a9, inside Smudge's
-//                                 Process (0x10003670); a second call site at
-//                                 0x100034f0 lies outside both natives and
-//                                 has not been attributed.
+//     Smudge(%[layer, level])   — as Blur: the DLL's 3x3 kernel at 0x10001000
+//                                 has exactly two call sites, 0x100034f0 in
+//                                 Smudge's Process (0x10003310) and 0x100038a9
+//                                 in Blur's (0x10003670).
 //     Lens(%[dest, zoom, center, power])
 //         — magnify a circular region via bilinear resampling.
 //     InitLens() / ReleaseLens()
@@ -36,6 +35,15 @@
 //     update()                  — repaint/refresh (the plugin's own `update`
 //                                  global, which the pixel filters invoke on
 //                                  the layer after writing).
+//
+// LIMITATIONS (each verified against the DLL, not assumed)
+// ------------------------------------------------------
+// initHaze honours `waves`, `speed` and `cycle`. The DLL's InitHaze reads
+// thirteen keys (pushes at 0x10004cc2-0x10005163, in order): time, intime,
+// outtime, speed, cycle, upper, center, lower, upperpow, centerpow,
+// lowerpow, waves, lwaves. The five the port ignores — upper/center/lower
+// and their powers — scale the wave amplitude across the scanline; leaving
+// them out makes the displacement uniform vertically instead of tapering.
 //
 // The pixel filters reach the Layer through its own standard TJS properties
 // (`imageWidth`, `imageHeight`, `mainImageBufferForWrite`,
