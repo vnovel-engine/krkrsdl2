@@ -68,6 +68,43 @@ loops. `src/shims/EXTRANS-HANDLERS.md` records the handler-name and option-key
 cross-check between the upstream source and the shipped binary, including the
 correction that the binary registers seven handlers rather than five.
 
+#### `doHaze`'s vertical taper, and two phase errors
+
+`initHaze` reads six keys the shim was ignoring — `upper`, `center`, `lower` and
+`upperpow`, `centerpow`, `lowerpow` — and Fate's own scenarios pass all six in 7
+of their 46 `@haze` calls (`upper=90 lower=490 center=250 upperpow=0.3
+lowerpow=0.2 centerpow=0.7`). They select which rows are displaced at all and
+scale the displacement per row, so leaving them out made the wave uniform over
+the whole frame. `FUN_100051d0`'s three branches are now ported as they are
+written: uniform when `upper` and `lower` are both negative, one ramp
+`upper → lower` when `center` is negative, two ramps otherwise, with the
+per-row slope an integer division as in the original (`0x1000584b`,
+`0x1000591f`).
+
+Two phase errors fell out while checking the taper against the disassembly:
+
+- **The table index advanced 651.9× too slowly** — `2048/PI` exactly, the
+  missing factor. The wrapper converts `speed` to `2*PI/speed` before calling
+  (`HazePlugin.ks:127..128`) and `InitHaze` stores that value verbatim
+  (`0x10004df0..0x10004e2a`; its own no-key default at `0x10004e32` is
+  `2*PI/4000`), while `doHaze` multiplies it by **`2048/PI`** (`0x1000f618`,
+  multiplied at `0x100054e4`) to get the index. The shim took the wrapper's
+  `2*PI/speed` as its per-ms index advance, so the index moved at
+  `2*PI/speed` where the DLL moves at `4096/speed`: with the default
+  `speed=4000` a wave that should take 2000 ms took 21.7 minutes, which is
+  indistinguishable from no motion within a scene.
+- **`cycle` was divided twice.** The wrapper already reduces it to `4096/cycle`
+  (`HazePlugin.ks:129..130`), which is what the DLL stores
+  (`0x10004e8c..0x10004e97`).
+
+The displacement also rounds the way the DLL does: to nearest on the untapered
+path (the `0.5` added at `0x10005751`) and truncated on the tapered one, which
+is already fixed-point (`sar eax,0x14` at `0x10005952`).
+
+`lwaves` remains unimplemented. `InitHaze` does read it (`0x10005149`), but the
+displacement is built from `waves` alone, so a second wave set has no consumer
+in `doHaze` — recorded here rather than guessed at.
+
 ### Changed
 
 - `MenuItem.visible` is item-level only and is no longer forwarded to the host

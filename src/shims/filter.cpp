@@ -38,12 +38,14 @@
 //
 // LIMITATIONS (each verified against the DLL, not assumed)
 // ------------------------------------------------------
-// initHaze honours `waves`, `speed` and `cycle`. The DLL's InitHaze reads
+// initHaze implements `waves`, `speed`, `cycle`, the three row boundaries
+// (upper/center/lower) and their three powers. The DLL's InitHaze reads
 // thirteen keys (pushes at 0x10004cc2-0x10005163, in order): time, intime,
 // outtime, speed, cycle, upper, center, lower, upperpow, centerpow,
-// lowerpow, waves, lwaves. The five the port ignores — upper/center/lower
-// and their powers — scale the wave amplitude across the scanline; leaving
-// them out makes the displacement uniform vertically instead of tapering.
+// lowerpow, waves, lwaves. Four are not implemented here: time, intime and
+// outtime, which HazePlugin.ks uses for its own in/out phases (124..126) and
+// which never reach the wave table; and lwaves, the second wave set, whose
+// read at 0x10005149 has no consumer in the displacement.
 //
 // The pixel filters reach the Layer through its own standard TJS properties
 // (`imageWidth`, `imageHeight`, `mainImageBufferForWrite`,
@@ -405,12 +407,19 @@ struct HazeState {
 	struct WaveComp { tjs_real freq; tjs_real phase; tjs_real amp; };
 	WaveComp *waveComps;    // the parsed `waves` list
 	tjs_int nWaves;
-	tjs_real speed;         // 2*PI/speed, the angular advance per ms
-	tjs_real cycle;         // 4096/cycle, the table advance per ms
+	tjs_real speed;         // the wrapper's 2*PI/speed as passed in
+	tjs_real cycle;         // the wrapper's 4096/cycle, the table step per row
+	// Vertical amplitude taper. The three row boundaries are image rows;
+	// the three powers are the displacement scale at each boundary. A
+	// boundary of -1 means the game left it out.
+	tjs_real upper, center, lower;
+	tjs_real upperpow, centerpow, lowerpow;
 
 	HazeState() : active(false), waveTable(NULL), tableSize(0),
 		srcWidth(0), srcHeight(0), srcPitch(0), srcBase(NULL),
-		waveComps(NULL), nWaves(0), speed(0), cycle(0) {}
+		waveComps(NULL), nWaves(0), speed(0), cycle(0),
+		upper(-1), center(-1), lower(-1),
+		upperpow(1.0), centerpow(1.0), lowerpow(1.0) {}
 };
 
 HazeState g_haze;
@@ -1249,15 +1258,31 @@ tjs_error TJS_INTF_METHOD InitHazeFunc(tTJSVariant *result, tjs_int numparams,
 	std::memcpy(g_haze.waveComps, comps, (size_t)nComps * sizeof(HazeState::WaveComp));
 	g_haze.nWaves = nComps;
 
-	// speed and cycle (HazePlugin.ks:127..134).
-	tjs_real speed = 4000;
+	// The wrapper converts `speed` to 2*PI/speed before calling
+	// (HazePlugin.ks:127..128), and the DLL stores that converted value
+	// verbatim (0x10004df0..0x10004e2a; its own no-key default is
+	// 2*PI/4000, 0x10004e32). doHaze advances the table by this value times
+	// 2048/PI per ms.
+	tjs_real speed = 2.0 * 3.14159265358979323846 / 4000.0;
 	GetRealOpt(opts, k.speed, &speed);
-	g_haze.speed = 2.0 * 3.14159265358979323846 / speed;
+	g_haze.speed = speed;
 
-	tjs_int cycle = 600;
-	GetIntOpt(opts, k.cycle, &cycle);
-	if (cycle > 0) g_haze.cycle = 4096.0 / (tjs_real)cycle;
-	else g_haze.cycle = 4096.0 / 600.0;
+	// `cycle` is already the table step per row: the wrapper converts it to
+	// 4096/cycle first (HazePlugin.ks:129..130) and the DLL stores that
+	// (0x10004e8c..0x10004e97).
+	tjs_real cycle = 6.0;
+	GetRealOpt(opts, k.cycle, &cycle);
+	g_haze.cycle = cycle;
+
+	// Vertical taper (HazePlugin.ks:145..150). The boundaries are row indices
+	// in the image, -1 when the game leaves them out; the powers are the
+	// displacement scale at each boundary.
+	GetRealOpt(opts, k.upper, &g_haze.upper);
+	GetRealOpt(opts, k.center, &g_haze.center);
+	GetRealOpt(opts, k.lower, &g_haze.lower);
+	GetRealOpt(opts, k.upperpow, &g_haze.upperpow);
+	GetRealOpt(opts, k.centerpow, &g_haze.centerpow);
+	GetRealOpt(opts, k.lowerpow, &g_haze.lowerpow);
 
 	// Build the 16384-entry table (FUN_100025e0:0x10002628..0x1000268e).
 	g_haze.tableSize = 0x4000;
@@ -1350,20 +1375,82 @@ tjs_error TJS_INTF_METHOD DoHazeFunc(tTJSVariant *result, tjs_int numparams,
 	const tjs_int h = dst.height < src.height ? dst.height : src.height;
 	if (w <= 0 || h <= 0) return kESucceed;
 
-	// Table phase per row: the original advances the table by `cycle` per row
-	// and by `speed` per ms (FUN_100051d0:0x100054e0, the __ftol of the
-	// running phase). The combined phase is tick*speed + y*cycle.
-	const double tickPhase = (double)tick * (double)g_haze.speed;
+	// Table phase per row. The index advances by `speed * 2048/PI` per ms
+	// (the 2048/PI constant at 0x1000f618, multiplied at 0x100054e4) and by
+	// `cycle` per row (the `fh += [esp+0x1c]` at 0x1000563a). The combined
+	// phase is tick*speed*2048/PI + y*cycle.
+	const double kIndexPerRad = 2048.0 / 3.14159265358979323846;
+	const double tickPhase = (double)tick * (double)g_haze.speed * kIndexPerRad;
 	const double rowPhase = (double)g_haze.cycle;
+
+	// Vertical taper (FUN_100051d0:0x10005548..0x10005980). Three cases,
+	// selected on the row boundaries. The branch decides both the rows that
+	// are drawn and the per-row amplitude weight.
+	//
+	//   A  upper < 0 && lower < 0   every row, uniform weight
+	//   B  not A, and center < 0    one ramp, upper to lower
+	//   C  not A, and center >= 0   a ramp to the centre, then a second
+	//                               ramp to the lower edge
+	//
+	// The weight is the displacement scale at that row, interpolated between
+	// the boundary powers (integer per-row slopes, 0x1000584b / 0x1000591f).
+	// Rows outside [upper, lower) are not written, so the layer keeps its
+	// previous content there.
+	const double uSel = g_haze.upper, cSel = g_haze.center, lSel = g_haze.lower;
+	const tjs_int upRow = (uSel < 0) ? 0 : (tjs_int)uSel;
+	tjs_int yStart, yMid, yEnd;
+	double wStart, wSlopeMid, wMid, wSlopeEnd;
+
+	if (uSel < 0 && lSel < 0)
+	{
+		yStart = 0; yMid = 0; yEnd = h;
+		wStart = 1.0; wSlopeMid = 0.0; wMid = 1.0; wSlopeEnd = 0.0;
+	}
+	else if (cSel < 0)
+	{
+		const tjs_int lowRow = (lSel < 0 || lSel > h) ? h : (tjs_int)lSel;
+		yStart = upRow; yMid = lowRow; yEnd = lowRow;
+		wStart = g_haze.upperpow;
+		wSlopeMid = (lowRow > upRow)
+			? (g_haze.lowerpow - g_haze.upperpow) / (double)(lowRow - upRow) : 0.0;
+		wMid = g_haze.lowerpow; wSlopeEnd = 0.0;
+	}
+	else
+	{
+		const tjs_int midRow = (cSel > h) ? h : (tjs_int)cSel;
+		const tjs_int lowRow = (lSel < 0 || lSel > h) ? h : (tjs_int)lSel;
+		yStart = upRow; yMid = midRow; yEnd = lowRow;
+		wStart = g_haze.upperpow;
+		wSlopeMid = (midRow > upRow)
+			? (g_haze.centerpow - g_haze.upperpow) / (double)(midRow - upRow) : 0.0;
+		wMid = g_haze.centerpow;
+		wSlopeEnd = (lowRow > midRow)
+			? (g_haze.lowerpow - g_haze.centerpow) / (double)(lowRow - midRow) : 0.0;
+	}
 
 	for (tjs_int y = 0; y < h; y++)
 	{
+		// Rows outside the tapered band keep their previous content.
+		if (y < yStart || y >= yEnd) continue;
+
+		// Amplitude weight for this row. The original carries it as a 20-bit
+		// fixed-point numerator (`counter * table * per`, then `>> 20` at
+		// 0x10005952); here it is an explicit scale.
+		const double weight = (y < yMid)
+			? wStart + (double)(y - yStart) * wSlopeMid
+			: wMid + (double)(y - yMid) * wSlopeEnd;
+
 		// Table index: (tick*speed + y*cycle) mod tableSize.
 		double phase = tickPhase + (double)y * rowPhase;
 		tjs_int idx = (tjs_int)phase & (g_haze.tableSize - 1);
 		if (idx < 0) idx += g_haze.tableSize;
-		const double dispRaw = g_haze.waveTable[idx] * (double)per;
-		const tjs_int offset = (tjs_int)dispRaw;
+		const double dispRaw = g_haze.waveTable[idx] * (double)per * weight;
+		// The untapered path rounds the displacement to nearest (the 0.5
+		// added at 0x10005751); the tapered path floors it outright, being
+		// already fixed-point (`sar eax,0x14` at 0x10005952).
+		const tjs_int offset = (uSel < 0 && lSel < 0)
+			? (tjs_int)std::floor(dispRaw + 0.5)
+			: (tjs_int)std::floor(dispRaw);
 
 		tjs_uint32 *drow = dst.Row(y);
 		tjs_uint32 *srow = src.Row(y);
