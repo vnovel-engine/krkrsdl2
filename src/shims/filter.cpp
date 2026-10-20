@@ -496,12 +496,12 @@ LensState g_lens;
 // MMX arm — the `*5` and `psllw(...,5)` are `<<2` to turn the /8 into a /256
 // so the SIMD pack does not need a divide).
 //
-// This port implements the same 3x3 box average directly: for each pixel,
-//     out = (sum of 3x3 neighbourhood) / 8   (centre counted twice)
-// which is the separable box filter the original computes. The border is
-// handled by clamping the neighbourhood to the surface, matching the
-// original's edge replication (it reads one row/column past each edge into
-// its scratch, which holds the edge pixel replicated).
+// This port applies a centre-weighted 3x3, `(2*centre + 8 neighbours) / 10`.
+// The DLL's interior path instead sums eight taps at weight 1 and shifts right
+// by 3 — a uniform 3x3 mean (FUN_10001000, decomp 244-252). Both give the same
+// result on a flat field, which is why a flat-field check cannot distinguish
+// them; they differ on any non-flat input. See CHANGELOG "Known issues in the
+// shims".
 //
 // `times` is the number of passes: Blur runs it `level` times, Smudge runs it
 // once with the radius being implicit (the 3x3 kernel is fixed; the original
@@ -1026,7 +1026,7 @@ tjs_error TJS_INTF_METHOD ReleaseLensFunc(tTJSVariant *result, tjs_int numparams
 // pulled towards the centre by the magnification weight, and the four
 // surrounding source pixels are bilinearly blended. Pixels outside the
 // radius are set to opaque black (0xff000000), as in the original
-// (0x10001e2d: `*local_34 = 0xff000000`).
+// (0x10001de2: `mov DWORD PTR [edi], 0xff000000`).
 //
 // The tan table (from InitLens) maps the normalised radius to a weight; the
 // repeated-squaring loop raises it to `power`. This port uses std::pow for
@@ -1294,7 +1294,7 @@ tjs_error TJS_INTF_METHOD InitHazeFunc(tTJSVariant *result, tjs_int numparams,
 		return TJS_E_FAIL;
 	}
 
-	// The per-entry angle advance (0x1000d2e8 = 0.0015339807878856412 = PI/2048).
+	// The per-entry angle advance (0x1000f100 = 0.0015339807878856412 = PI/2048).
 	const double angleStep = 3.14159265358979323846 / 2048.0;
 	double theta = 0.0;
 	for (tjs_int i = 0; i < g_haze.tableSize; i++)
@@ -1331,7 +1331,7 @@ tjs_error TJS_INTF_METHOD InitHazeFunc(tTJSVariant *result, tjs_int numparams,
 //            FUN_100027a0); if false, copy it straight (FUN_100029a0).
 //
 // For each row y, the displacement is:
-//   offset = waveTable[(tick * speed + y * cycle) & 0x3FFF] * per
+//   offset = waveTable[(int)(tick * speed * 2048/PI + y * cycle) & 0x3FFF] * per
 // (the original indexes the table at 0x100054e0 with a phase that combines
 // the tick and the row, then scales by `per`). Rows are shifted left or
 // right by `offset` pixels; the uncovered edge is filled with `bgcolor`.

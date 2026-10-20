@@ -54,8 +54,11 @@
 //   off  = (tjs_int)(W/2 * per + 0.5)              (0x1000215a..0x10002176)
 //          When `open` is false, per is inverted first:
 //          per = 1.0 - per                          (0x10002154: fsubr 1.0)
-//   off2 = (tjs_int)(off * 2.0)                    (0x100021a2/0x100021bb,
+//   off2 = (tjs_int)(off * 1.75)                   (0x100021a2/0x100021bb,
 //                                                    used only for types 2/3)
+//          The constant at 0x1000a240 is 1.75. The code below multiplies by
+//          2.0 instead, so the diagonal split travels further than the
+//          original's; see CHANGELOG "Known issues in the shims".
 //
 //   type 0 -> FUN_10001000(off,  W, H)   horizontal split
 //   type 1 -> FUN_100011b0(off,  W, H)   vertical split

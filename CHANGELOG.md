@@ -105,6 +105,29 @@ is already fixed-point (`sar eax,0x14` at `0x10005952`).
 displacement is built from `waves` alone, so a second wave set has no consumer
 in `doHaze` — recorded here rather than guessed at.
 
+#### Known issues in the shims
+
+Two divergences from the DLL are known and not yet fixed. Both are in shims
+already committed, both were found by auditing the comments against the
+disassembly rather than by watching a frame, and neither is visible on a flat
+or motionless test image:
+
+- **`slideopen`'s diagonal wipes move too far.** The DLL scales the diagonal
+  offset by **1.75** (`fmul QWORD PTR ds:0x1000a240` at `0x100021a8`/`0x100021c1`;
+  the constant at `0x1000a240` is 1.75), so the split travels about `0.875 * W`
+  at full progress. `src/shims/slideopen.cpp` uses `2.0` at four sites, so it
+  travels about `W`. The direction and geometry are right; the extent is ~14%
+  long.
+- **`Blur`/`Smudge` do not use the original's kernel.** The DLL's interior path
+  (`FUN_10001000`, decomp 244-252) sums eight taps at weight 1 and shifts right
+  by 3 — a uniform 3x3 mean. `src/shims/filter.cpp` uses centre weight 2 with
+  eight neighbours divided by 10. Both are identity on a flat field, which is
+  why the flat-field check that motivated the 10-tap form could not distinguish
+  them; the two differ on any non-flat input.
+
+Both are recorded here, and at the code sites, instead of being silently
+carried or fixed unverified.
+
 ### Changed
 
 - `MenuItem.visible` is item-level only and is no longer forwarded to the host
