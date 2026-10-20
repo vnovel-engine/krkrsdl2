@@ -418,6 +418,7 @@ src/shims/noop.c
 src/shims/drawer.cpp
 src/shims/extrans.cpp
 src/shims/firespark.cpp
+src/shims/textstream.cpp
 src/core/sdl2/FontDiscovery.cpp
 src/core/base/sdl2/EventImpl.cpp
 src/core/base/sdl2/FileSelector.cpp

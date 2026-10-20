@@ -140,9 +140,40 @@ bool TVPIsTextPlaneCallbackSet()
 	return TextPlaneCallback != NULL;
 }
 
+/* Off unless a host asks (see PresentIntf.h). Not cleared by detaching the
+ * callback: a host that reattaches has already stated whether it splices, and
+ * the flag costs one branch when nothing is listening anyway. */
+static bool TextPlaneSplice = false;
+
+/* C++ linkage, matching PresentIntf.h - the engine's own side of the seam. The
+ * CORE reaches this through krkr_set_text_plane_splice in the C ABI
+ * (src/engine_kirikiri_cabi.cpp), not by name, so no extern "C" is needed. */
+void TVPSetTextPlaneSplice(bool enabled)
+{
+	TextPlaneSplice = enabled;
+}
+
+bool TVPIsTextPlaneSpliceEnabled()
+{
+	return TextPlaneSplice;
+}
+
+/* Off unless a host asks (see PresentIntf.h). */
+static bool SplitViewArtworkOnly = false;
+
+void TVPSetSplitViewArtworkOnly(bool enabled)
+{
+	SplitViewArtworkOnly = enabled;
+}
+
+bool TVPIsSplitViewArtworkOnly()
+{
+	return SplitViewArtworkOnly;
+}
+
 void TVPPresentTextPlane(void * pixels, tjs_int width, tjs_int height,
 	tjs_int pitch, const tTVPRect & changed, tjs_int origin_x, tjs_int origin_y,
-	bool restart)
+	bool restart, tjs_int plane_x, tjs_int plane_y)
 {
 	if(TextPlaneCallback == NULL) return;
 	/* pitch retains its sign: a negative value is the engine's bottom-up
@@ -173,9 +204,70 @@ void TVPPresentTextPlane(void * pixels, tjs_int width, tjs_int height,
 	if(plane.ChangedHeight < 0) plane.ChangedHeight = 0;
 	plane.OriginX       = (int)origin_x;
 	plane.OriginY       = (int)origin_y;
+	/* Splice mode only: with it off the walk that produced these was skipped,
+	 * so the caller passed 0 and no host can be relying on them. */
+	plane.PlaneX        = TextPlaneSplice ? (int)plane_x : 0;
+	plane.PlaneY        = TextPlaneSplice ? (int)plane_y : 0;
 	plane.Restart       = restart;
 	plane.PlaneSerial   = ++plane_serial;
 	plane.HostData      = TextPlaneHostData;
 
 	TextPlaneCallback(&plane);
+}
+
+/*---------------------------------------------------------------------------*/
+/* The text run stream
+ *
+ * Same shape as the plane above: one host callback, one monotonic serial, one
+ * place where the engine's types stop (the contract struct is all plain C).
+ */
+/*---------------------------------------------------------------------------*/
+
+static tTVPTextRunCallback TextRunCallback = NULL;
+static void * TextRunHostData = NULL;
+
+extern "C" void TVPSetTextRunCallback(tTVPTextRunCallback callback, void * hostdata)
+{
+	TextRunCallback = callback;
+	TextRunHostData = hostdata;
+}
+
+bool TVPIsTextRunCallbackSet()
+{
+	return TextRunCallback != NULL;
+}
+
+void TVPPresentTextRun(const tjs_char * text, tjs_int length,
+	tjs_int x, tjs_int y,
+	tjs_uint32 color, tjs_int opacity, bool antialias,
+	tjs_int shadow_level, tjs_uint32 shadow_color,
+	tjs_int shadow_ofs_x, tjs_int shadow_ofs_y)
+{
+	if(TextRunCallback == NULL) return;
+	if(text == NULL || length <= 0) return;
+
+	/* A monotonic counter, as for frames and the plane. */
+	static tjs_uint64 run_serial = 0;
+
+	tTVPTextRun run;
+	/* NOT retained: the caller's string may be reused the moment this returns,
+	 * and the contract says so. Present.cpp hands the host the same pointer for
+	 * the duration of the callback only, which is the documented window. The
+	 * cast is the boundary's one type translation - the engine's tjs_char is
+	 * utf-16 and the contract states UTF-16 code units. */
+	run.Text          = (const uint16_t *)text;
+	run.TextLength    = (int)length;
+	run.X             = (int)x;
+	run.Y             = (int)y;
+	run.Color         = (uint32_t)color;
+	run.Opacity       = (int)opacity;
+	run.Antialias     = antialias;
+	run.ShadowLevel   = (int)shadow_level;
+	run.ShadowColor   = (uint32_t)shadow_color;
+	run.ShadowOffsetX = (int)shadow_ofs_x;
+	run.ShadowOffsetY = (int)shadow_ofs_y;
+	run.RunSerial     = ++run_serial;
+	run.HostData      = TextRunHostData;
+
+	TextRunCallback(&run);
 }

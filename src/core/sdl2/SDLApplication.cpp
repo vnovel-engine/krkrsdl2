@@ -3561,10 +3561,6 @@ void krkrsdl2_pre_init_platform(void)
 #ifdef _WIN32
 	_set_error_mode(_OUT_TO_STDERR);
 #endif
-	/* Build stamp: printed here (the first engine call the core makes) so the
-	 * log proves which module binary is actually loaded. Bump ENGINE_BUILD_STAMP
-	 * on every behavioural change to the engine. */
-	fprintf(stderr, "krkrsdl2 engine: build=%s\n", ENGINE_BUILD_STAMP);
 }
 
 void krkrsdl2_set_args(int argc, tjs_char **argv)

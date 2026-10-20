@@ -420,4 +420,22 @@ void TVPInstallBuiltinPlugin(const ttstr &name)
 void TVPInstallBuiltinPlugins(void)
 {
 	TVPSetXP3ArchiveExtractionFilter(&BuiltinXP3Filter);
+
+	/* The core's own text channel (src/shims/textstream.cpp): the globals a
+	 * look-ahead parser calls to hand parsed text to the shell.
+	 *
+	 * Installed HERE, at start-up, rather than through overrides.txt — and that
+	 * is the honest place for it, because no game links this name. A table entry
+	 * would have to pretend some title asks for `textstream.dll`; the table is a
+	 * record of what a game's own code links, and this is not that. It is the
+	 * core talking to itself, so it starts with the engine rather than in
+	 * response to a title's plugin request, and it is live before any script
+	 * runs — which is when the look-ahead needs it.
+	 *
+	 * A game is unaffected either way: the globals are only reachable by name,
+	 * and a caller checks `typeof vnovelPublishTextRun == "function"` before
+	 * using them. */
+	if (!TVPInstallBuiltinShim("textstream"))
+		TVPAddImportantLog(
+			ttstr(TJS_W("(info) text stream shim not present in this build")));
 }

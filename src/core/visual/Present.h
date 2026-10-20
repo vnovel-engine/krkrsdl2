@@ -221,9 +221,43 @@ typedef struct tTVPTextPlane
 	/* Where the host should place the plane's visible origin, in plane
 	 * coordinates. The engine sets this to its own text origin so a host that
 	 * does not implement scrolling can composite the plane 1:1 at the position
-	 * the game intended. A scrolling host ignores it and chooses its own. */
+	 * the game intended. A scrolling host ignores it and chooses its own.
+	 *
+	 * NOTE the space: this is a position WITHIN the surface described by
+	 * Pixels/Width/Height. It is a pen/destination position, not the surface's
+	 * own placement on screen - for that see PlaneX/PlaneY below. */
 	int OriginX;
 	int OriginY;
+
+	/* Where the SURFACE described by Pixels/Width/Height sits in the window,
+	 * in window (primary-layer) pixels. Read-only context: the host never tells
+	 * the engine where it drew, it is only told.
+	 *
+	 * The two engines describe different areas, and this field is what makes a
+	 * host able to treat them the same way:
+	 *
+	 *   - ONScripter/PONScripter publish their whole text surface, which is
+	 *     screen-sized, so it IS the page: PlaneX/PlaneY are 0 and OriginX/Y is
+	 *     already window-absolute.
+	 *   - KiriKiri publishes the line box text is currently accumulating into
+	 *     (a 616x40 line-height bitmap, measured), which is a fragment of the
+	 *     window: OriginX/Y is the pen position INSIDE that box, and
+	 *     PlaneX/PlaneY says where the box itself is.
+	 *
+	 * So one formula places any publication, on any engine: the surface's own
+	 * pixel (px, py) sits at window
+	 *
+	 *     (PlaneX + px, PlaneY + py)
+	 *
+	 * which is what a host accumulating a page uses - it blits the CHANGED rect
+	 * out of the surface to (PlaneX + ChangedX, PlaneY + ChangedY). (On
+	 * KiriKiri OriginX/Y happens to equal ChangedX/Y, because the pen position
+	 * and the changed glyph rect are the same thing there; on ONS/PON the two
+	 * differ and the CHANGED rect is the one a splice uses.) A host that only
+	 * ever presents the latest publication can ignore this field entirely, as
+	 * it already ignores the origin. */
+	int PlaneX;
+	int PlaneY;
 
 	/* True when the engine began a new page: everything previously drawn on the
 	 * plane is gone (a scene change, a `reset`, a new chapter). A host showing a
@@ -248,6 +282,95 @@ typedef bool (*tTVPTextPlaneCallback)(const tTVPTextPlane * plane);
  * separate surface when a host is listening, so an uninstalled callback costs
  * nothing. */
 void TVPSetTextPlaneCallback(tTVPTextPlaneCallback callback, void * hostdata);
+
+/*---------------------------------------------------------------------------*/
+/* The text run stream
+ *
+ * The plane above is PIXELS: a picture of the text, which a host can relocate
+ * but not restyle or reflow. This is the other half of the same separation -
+ * the text the engine was asked to draw, before it became pixels.
+ *
+ * Why it is a separate stream rather than a field on the plane: they are
+ * different things, produced at different points, and a host may want one
+ * without the other. The plane is per-bitmap (it is whatever surface glyphs
+ * landed on); this is per *call*, and the call is where the engine still knows
+ * the characters, the position it was told to draw them at, and the style it
+ * was given. Nothing downstream of that call can recover any of it.
+ *
+ * KiriKiri/KAG is the motivating case and shows why this is worth having: KAG
+ * draws one character per call (`ll.drawText(dx, dy, ch, ...)`, MessageLayer.tjs)
+ * into a per-line bitmap, so the run stream IS the script's text with layout
+ * already resolved - while the plane is a line box that a host must accumulate
+ * and cannot read as text at all.
+ *
+ * Shape of the data, and what it deliberately does NOT say: a run is what one
+ * draw call carried. It is not a line, a page, or an utterance - those are
+ * groupings a host builds from positions and order (the engine has no such
+ * notion to report). Likewise there is no "this run is the shadow of that one":
+ * a call carries its own shadow parameters, and the engine renders both from
+ * them.
+ */
+/*---------------------------------------------------------------------------*/
+
+typedef struct tTVPTextRun
+{
+	/* The characters this call was asked to draw, as UTF-16 code units.
+	 *
+	 * NOT NUL-terminated in general, and NOT valid after the callback returns
+	 * (it points into a string the engine may reuse). Use TextLength; a host
+	 * that intends to keep the text copies it.
+	 *
+	 * Usually one character on KiriKiri/KAG, but not always - a ruby run or a
+	 * pre-composed string arrives whole - so a host must not assume length 1. */
+	const uint16_t * Text;
+	int TextLength;
+
+	/* Where the text was drawn, in LAYER-LOCAL pixels: exactly the x/y the draw
+	 * call was given. Kept as given rather than normalised, because the meaning
+	 * depends on the engine's own text metrics (a KAG glyph's y is the top of
+	 * the glyph, not a baseline) and inventing a convention here would be a
+	 * guess the host cannot check against.
+	 *
+	 * There is deliberately NO window-resolved position. The point of this
+	 * stream is to re-lay-out the text (reflow, totalfit, Knuth-Plass), and a
+	 * consumer that does that derives its own placement - the engine's, already
+	 * resolved through the layer tree, is at best a hint about where the engine
+	 * decided to put things. Reporting it would also force a parent-chain walk
+	 * per glyph, which is the one part of this path that costs anything. A
+	 * consumer that wants "where did the engine put it" has the plane, which is
+	 * that answer already rendered. */
+	int X;
+	int Y;
+
+	/* Style, as given to the draw call. Color is 0xRRGGBB (the engine's alpha
+	 * rides in Opacity, not here). ShadowLevel 0 means no shadow - the shadow
+	 * fields are then meaningless. */
+	uint32_t Color;
+	int Opacity;
+	bool Antialias;
+	int ShadowLevel;
+	uint32_t ShadowColor;
+	int ShadowOffsetX;
+	int ShadowOffsetY;
+
+	/* Increments once per run, so a host can tell "the engine drew the same text
+	 * again" from "the engine did not draw". Wraps; compare by subtraction. */
+	uint64_t RunSerial;
+
+	/* The value passed to TVPSetTextRunCallback, returned unchanged. */
+	void * HostData;
+} tTVPTextRun;
+
+typedef bool (*tTVPTextRunCallback)(const tTVPTextRun * run);
+
+/* Installs the host's text-run callback. Passing NULL detaches, and the engine
+ * then only draws the text as it always did. Installed before the engine
+ * starts, not synchronised against a running draw.
+ *
+ * Like the plane callback, installing this is what enables the work: with no
+ * host listening the engine does not even resolve the window position, so an
+ * uninstalled callback costs nothing. */
+void TVPSetTextRunCallback(tTVPTextRunCallback callback, void * hostdata);
 
 /*---------------------------------------------------------------------------*/
 /* The engine-internal half of this seam lives in PresentIntf.h, which is where

@@ -558,7 +558,6 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 #endif
 
 		if(TVPProjectDirSelected) TVPInitializeStartupScript();
-		fprintf(stderr, "DEBUG: startup script loaded, tarminate=%d\n", (int)tarminate_);
 		// Run() was here in #if 0, removed
 
 #if 0

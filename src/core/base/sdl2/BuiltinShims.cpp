@@ -79,6 +79,8 @@ extern "C" int SHIM_LINK(firespark)(iTVPFunctionExporter *);
 extern "C" int SHIM_UNLINK(firespark)(void);
 extern "C" int SHIM_LINK(extrans)(iTVPFunctionExporter *);
 extern "C" int SHIM_UNLINK(extrans)(void);
+extern "C" int SHIM_LINK(textstream)(iTVPFunctionExporter *);
+extern "C" int SHIM_UNLINK(textstream)(void);
 
 namespace {
 
@@ -110,6 +112,13 @@ const BuiltinShim g_builtin_shims[] = {
 	  SHIM_UNLINK(extrans),
 	  "KiriKiri transition effects (mosaic, ripple, ...) via a transition "
 	  "handler provider" },
+	{ "textstream",
+	  SHIM_LINK(textstream),
+	  SHIM_UNLINK(textstream),
+	  "the TJS -> core text channel: vnovelPublishTextRun / "
+	  "vnovelPublishTextPage hand parsed text to the shell's run sink, for a "
+	  "consumer that re-lays-out the text rather than viewing the engine's "
+	  "pixels" },
 	{ nullptr, nullptr, nullptr, nullptr },
 };
 

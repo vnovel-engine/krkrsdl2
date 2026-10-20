@@ -125,7 +125,6 @@ std::vector<std::string> TVPListFontFiles()
 	if (boot) FcConfigSetCurrent(boot);
 	FcConfig *cfg = FcConfigGetCurrent();
 	const FcChar8 *cfgfile = cfg ? FcConfigGetFilename(cfg, NULL) : NULL;
-	fprintf(stderr, "krkr fonts: fontconfig config='%s'\n", cfgfile ? (const char *)cfgfile : "(none)");
 	if (cfg) {
 		/* Enumerate the font sets the config knows about directly, rather than
 		 * asking FcFontList to match a NULL pattern (which does not reliably

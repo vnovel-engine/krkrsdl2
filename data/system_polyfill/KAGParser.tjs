@@ -2205,6 +2205,34 @@ class KAGParser
 		{
 			return void;
 		}
+
+		// Text look-ahead (see system_polyfill/TextLookAhead.tjs).
+		//
+		// HERE, in the PUBLIC wrapper, not the internal getNextTag: the
+		// look-ahead reads the live parser through assign(), which expects a
+		// KAGParser (it dereferences __internal_KAGParser_instance). The
+		// internal method receives a __internal_KAGParser instead, so calling
+		// the walk from there passed the wrong object type and the walk
+		// failed on its first dereference -- silently, into the catch.
+		//
+		// try/catch rather than a plain read: TJS THROWS on an undefined
+		// member, and these globals come from another file whose load order
+		// is not guaranteed.
+		try
+		{
+			if (global.vnovelLookAheadPeek !== void &&
+				global.vnovelLookAheadActive !== true)
+			{
+				global.vnovelLookAheadActive = true;
+				global.vnovelLookAheadPeek(this);
+				global.vnovelLookAheadActive = false;
+			}
+		}
+		catch (e)
+		{
+			global.vnovelLookAheadActive = false;
+		}
+
 		return res;
 	}
 

@@ -1,0 +1,641 @@
+﻿// TextLookAhead.tjs -- greedy evaluation of the scenario, for text rendering.
+//
+// WHY THIS EXISTS
+//
+// The engines draw text straight into the game frame, one character per tick,
+// paced by the game's own typewriter speed. The core therefore learns a page's
+// text at the speed the reader does -- fine for playing, useless for rendering
+// the text yourself (reflow, restyle, place it where you like).
+//
+// This walks the scenario AHEAD of the typewriter and hands the text to the
+// core before the engine has drawn any of it.
+//
+// WHAT IT DOES
+//
+// Greedy evaluation until a BRANCH:
+//
+//   1. Take a snapshot of the live parser's position.
+//   2. Walk forward collecting characters, through everything that cannot
+//      change which text comes next.
+//   3. Stop at a BRANCH: a point past which which text comes next depends on the
+//      running game.
+//   4. Publish each page as it is completed, then stop at the branch.
+//
+// A LINK IS NOT A BRANCH. It is text with a clickable region, so its labels
+// ("Yes," / "No,") are displayed and deterministic. What halts a page is the
+// PAUSE after the link. That distinction was measured: stopping at the link tag
+// itself dropped the choice labels from the published page entirely.
+//
+// `p` AND `s` ARE DIFFERENT PAUSES:
+//
+//   p  a click-wait. The reader clicks and the SAME next text appears, whatever
+//      they do, so the walk CONTINUES through it. Fate's own page turn is
+//      `@pg` = `@p` + `@cm` (scenario/マクロ.ks).
+//   s  an execution stop, which is where a CHOICE is resolved. The text after it
+//      depends on which link was taken, so the walk STOPS -- it is a branch.
+//
+// NOT STATIC ANALYSIS
+//
+// Nothing is precomputed and nothing is resolved ahead of the runtime. The walk
+// reads the same script the engine is about to execute and stops exactly where
+// the engine's next move stops being knowable. Everything published is before
+// any branch, and is therefore the text on every path.
+//
+// WHY IT CANNOT DISTURB THE GAME
+//
+// A private KAGParser, never the conductor's:
+//
+//   * Its own cursor, macro table and call stack, re-seeded with assign() on
+//     every walk, so it carries nothing between walks.
+//   * A SHADOW OWNER. Every owner callback in the parser is guarded by
+//     `typeof(this.owner.onJump) === "Object"`. An owner with no such member
+//     means those guards fail and no callback can fire -- disabled structurally,
+//     not suppressed. This matters: the conductor's own onJump/onCall/onReturn
+//     increment the game's label-recording counters (MainWindow.tjs
+//     onConductorJump -> incRecordLabel), which is save-progress bookkeeping.
+//   * processSpecialTags = false, so the parser RETURNS jump/call/return/if as
+//     ordinary tags instead of acting on them. It cannot follow a jump or push a
+//     call frame, which is also what lets us SEE those tags and stop at them.
+//
+// TJS DIALECT NOTES (each was a runtime failure here, measured)
+//
+//   * typeof of a native function object is "Object", never "function", so
+//     guards test for existence with `!== void`, not typeof.
+//   * Reading an UNDEFINED member throws ("Member ... does not exist"), so a
+//     guard around a global another file creates must use try/catch.
+//   * There is no Function.call/.apply and no `arguments` object.
+//   * A dictionary literal uses `"key" => value`, not JS's `"key": value`.
+//   * Closures do not capture the enclosing function's locals.
+//
+// WHEN IT RUNS
+//
+// From the hook added inside KAGParser.tjs getNextTag (see the note there),
+// which fires on every tag. So this must be cheap when there is nothing to do,
+// which is what `coveredUpTo` provides.
+
+class VNovelLookAhead
+{
+	var parser;        // private: never the conductor's
+	var shadowOwner;   // no callbacks, deliberately: see above
+	var clearTags;     // tagnames that END A PAGE (and the walk continues)
+	var pauseTags;     // tagnames emitted as an explicit PAUSE token
+	var stopTags;      // tagnames that END THE WALK (a mandatory pause)
+	var textTags;      // tagnames that contribute text
+	var linkTags;      // tagnames that open/close a clickable region
+	var budget;        // tag limit per walk, so a pathological script cannot hang
+
+	// Where each walk finished, PER STORAGE, so a call from inside an already
+	// covered stretch returns without walking again.
+	//
+	// Per storage, not one global scalar: a walk runs in whatever script the
+	// game is in, and a single scalar meant a walk in one script ERASED the
+	// coverage of another. Measured on Fate: the disclaimer (Disclaimer.ks) was
+	// walked once, then a walk crossed into a macro script and set the mark
+	// there, so returning to Disclaimer.ks line 4 looked uncovered, the text was
+	// re-walked, and the one disclaimer page arrived as PAGE(832), 742, 650,
+	// 578, 450, 280, 156 -- each a shorter remainder as the typewriter advanced.
+	var haveCovered;
+	// storage name -> [coveredLine, coveredPos]. See the note above.
+	var coveredByStorage;
+
+	// The speaker of the line being built, held SEPARATELY from pageText AND
+	// from any single walk.
+	//
+	// Two separate reasons, both measured:
+	//
+	//   * Not in pageText: a game sets the nametag BEFORE the line it belongs
+	//     to, and a CLEAR tag in between (FM's name macro does exactly this)
+	//     wipes the page buffer. Appending the speaker to the text lost it.
+	//   * Not a LOCAL of peekFrom: the hook re-enters on every tag, and the
+	//     walk stops at flow tags inside the name macro, so the nametag and the
+	//     line it names are routinely found by DIFFERENT walks. A local reset
+	//     between them, leaving `ATTACH had=[]` with the text in hand.
+	//
+	// It is attached to the first text that follows, then cleared. That is the
+	// line it names.
+	var pendingSpeaker;
+
+	// Per-game text drivers: see driverDispatch. Empty by default, so a game
+	// with no driver pays one integer test per tag.
+	var driverFns;
+	var driverCount;
+
+	function VNovelLookAhead()
+	{
+		parser = new global.KAGParser();
+		shadowOwner = %[];
+
+		parser.__internal_KAGParser_instance.construct(shadowOwner);
+		parser.__internal_KAGParser_instance.processSpecialTags = false;
+
+		// A PAGE is delimited by a CLEAR marker (see the spec): the message layer
+		// is emptied, so one page ends here and the next begins. Clear markers
+		// publish the page and the walk continues -- the next page's text is
+		// just as determined as this one's.
+		clearTags = %[
+			"cm" => true,
+			"ct" => true,
+			"er" => true
+		];
+
+		// A PAUSE is emitted INTO the page as an explicit token, and the walk
+		// CONTINUES: a click-wait does not change which text comes next, so the
+		// text after it is still determinable. This is the spec's "pauses in our
+		// own representation are explicit" -- the token is the record of where
+		// the reader must interact, and the engine still paces the display.
+		pauseTags = %[
+			"p"    => "pause",
+			"wait" => "pause",
+			"click" => "pause"
+		];
+
+		// A MANDATORY pause ends the walk: a choice is resolved here, so the text
+		// after it depends on which link was taken and is NOT determinable. The
+		// token is emitted so our renderer knows to present the choice, then the
+		// walk stops.
+		//
+		// Same set as the control-flow tags, because all of them share the one
+		// property that matters: what follows is not knowable without running the
+		// game.
+		stopTags = %[
+			"s"           => "choice",
+			"selectroute" => "choice",
+			"select"      => "choice",
+			"jump"        => "flow",
+			"call"        => "flow",
+			"return"      => "flow",
+			"if"          => "flow",
+			"elsif"       => "flow",
+			"ignore"      => "flow"
+		];
+
+		textTags = %[
+			"ch" => true,
+			"r"  => true
+		];
+
+		// Link markup spans TWO tags, so the open state is tracked across the
+		// loop rather than handled in one branch. A link is NOT a branch: its
+		// labels are displayed and deterministic (measured -- stopping at the tag
+		// dropped "Yes," / "No," from the published page). Its `target` is the
+		// payload our renderer sends back to synthesize a click.
+		linkTags = %[
+			"link"    => true,
+			"endlink" => true
+		];
+
+		// A page is lines, not a novel, and a walk is not unbounded: this caps a
+		// script with no branch and no boundary so the engine thread cannot be
+		// hung. A normal walk is far below it.
+		budget = 20000;
+
+		haveCovered = false;
+		coveredByStorage = %[];
+		driverFns = [];
+		driverCount = 0;
+		pendingSpeaker = "";
+	}
+
+	//-------------------------------------------------------------------------
+	// True when the live parser has not yet moved past what the last walk
+	// covered, i.e. a walk now would re-publish text already sent.
+	//-------------------------------------------------------------------------
+	function coveredUpTo(live)
+	{
+		if(!haveCovered) return false;
+		try
+		{
+			var li = live.__internal_KAGParser_instance;
+			if(li === void) return false;
+			var mark = coveredByStorage[li.storageName];
+			if(mark === void) return false;
+			if(li.curLine < mark[0]) return true;
+			if(li.curLine > mark[0]) return false;
+			return li.curPos <= mark[1];
+		}
+		catch(e) { return false; }
+	}
+
+	//-------------------------------------------------------------------------
+	// Walk from the live parser's position, publishing each completed page.
+	//
+	// `live` is the running parser (the conductor extends KAGParser). It is
+	// READ, never written: assign() copies its state into this object's own
+	// parser, so the game's position is untouched.
+	//
+	// Returns the number of pages published.
+	//-------------------------------------------------------------------------
+	function peekFrom(live)
+	{
+		if(live === void || live === null) return 0;
+		if(coveredUpTo(live)) return 0;
+
+		// Re-seed from wherever the game is now: nothing from the previous walk
+		// survives, which is what makes this stateless between walks.
+		parser.assign(live);
+
+		// assign() copies parse state, not modes, so they are re-stated.
+		parser.__internal_KAGParser_instance.construct(shadowOwner);
+		parser.__internal_KAGParser_instance.processSpecialTags = false;
+
+		var pageText = "";
+		var pages = 0;
+		var n = 0;
+		var done = false;
+		var inLink = false;
+		// Whether the page has any TEXT at all, as opposed to only dialect
+		// tokens. A page with no characters is not a page: `<<flow>>` says
+		// "determination ends here", and the engine's boot sequence (plugin
+		// loading, @call/@if/@jump through loadPlugins.ks, ConditionPlugin.ks,
+		// the game menu) reaches those tags with nothing on screen. Publishing
+		// one page per control-flow tag there put eight text-free `<<flow>>`
+		// lines in front of the real first page -- measured, and they are not
+		// pages a renderer can show.
+		var hasText = false;
+
+		while(!done)
+		{
+			n = n + 1;
+			if(n > budget) break;
+
+			var tag;
+			try
+			{
+				tag = parser.getNextTag();
+			}
+			catch(ge)
+			{
+				/* The private walk cannot evaluate some tag. The measured case is
+				 * the `eval` tag's `cond` attribute, whose expression references
+				 * runtime state the shadow parser has no context for (Fate:
+				 * `eval cond="mp.storage!=''"`, where `mp` is a macro-argument
+				 * object that only exists once the ENGINE's macro machinery has
+				 * run -- our walk has no such object, so the eval throws; counted
+				 * five times in one Fate boot with a probe on this catch).
+				 *
+				 * Such a tag is TEXT-INDEPENDENT control flow: what text follows
+				 * depends on state the walk cannot see, which is exactly the
+				 * walk's definition of a BRANCH. So stop here, publish what was
+				 * collected, and let the game decide -- do NOT let the throw kill
+				 * the walk. Without this guard the whole walk aborts at the
+				 * throwing tag and nothing after it is ever published. (The
+				 * republish storm that first pointed here -- one page arriving as
+				 * PAGE(832), 742, 650, ... -- was a SEPARATE bug, the single
+				 * global coverage scalar; see coveredByStorage.) */
+				if(pageText !== "" && hasText)
+				{
+					publishPage(pageText);
+					pages = pages + 1;
+				}
+				pageText = "";
+				done = true;
+				continue;
+			}
+			if(tag === void || tag === null) break;   // end of scenario
+
+			var name = tag.tagname;
+			if(name === void) break;
+
+			// `macropop`: balance the macro-argument stack.
+			//
+			// The parser PUSHES macro args on a macro call at KAGParser.tjs:1667,
+			// which is NOT behind the processSpecialTags gate. The matching POP
+			// is a SPECIAL tag, handled at :1748, which IS behind it -- and the
+			// walk blanks `tagkind` (processSpecialTags = false). So the walk's
+			// stack never rewinds: getMacroTopNoAddRef() keeps returning a stale
+			// frame, and anything evaluated against `mp` reads the wrong macro's
+			// arguments. This is generic -- every macro-using game leaks frames,
+			// not just one -- so it is fixed here, in the walk, exactly as the
+			// engine would pop it.
+			if(name === "macropop")
+			{
+				try { parser.__internal_KAGParser_instance.popMacroArgs(); } catch(e) { }
+				continue;
+			}
+
+			// A MANDATORY pause: emit the token, publish, stop. What follows
+			// depends on the running game, so it is not determinable.
+			if(stopTags[name] !== void)
+			{
+				pageText = pageText + "<<" + stopTags[name] + ">>";
+				// A `<<flow>>` page with no characters in it carries nothing:
+				// it only says the walk reached a control-flow tag, which is
+				// true of every @call/@if/@jump during boot. Publishing those
+				// put eight empty `<<flow>>` lines ahead of the real first page.
+				// A `<<choice>>` is kept even with no text, because a page that
+				// is only a choice is a real page (the fixtures have one), while
+				// a flow token with no text is not.
+				if(pageText !== "" && (hasText || stopTags[name] !== "flow"))
+				{
+					publishPage(pageText);
+					pages = pages + 1;
+				}
+				pageText = "";
+				done = true;
+				continue;
+			}
+
+			// A CLEAR marker: the page ends and the walk continues, because the
+			// next page's text is just as determined as this one's.
+			if(clearTags[name] === true)
+			{
+				pageText = pageText + "<clear>";
+				// Same rule as the flow token above: a clear with no text on the
+				// page is not a page, only a boundary the boot sequence crossed.
+				if(pageText !== "" && hasText)
+				{
+					publishPage(pageText);
+					pages = pages + 1;
+				}
+				pageText = "";
+				hasText = false;
+				continue;
+			}
+
+			// A PAUSE: an explicit token INSIDE the page. The walk continues --
+			// the reader must interact, but which text follows does not depend on
+			// what they do.
+			if(pauseTags[name] !== void)
+			{
+				pageText = pageText + "<" + pauseTags[name] + ">";
+				continue;
+			}
+
+			// LINK markup. Not a branch: the labels are displayed and
+			// deterministic. The opening tag carries the payload our renderer
+			// sends back to synthesize a click on that link.
+			if(name === "link")
+			{
+				var tgt = tag.target;
+				if(tgt === void) tgt = "";
+				pageText = pageText + "<link:" + tgt + ">";
+				inLink = true;
+				continue;
+			}
+			if(name === "endlink")
+			{
+				pageText = pageText + "</link>";
+				inLink = false;
+				continue;
+			}
+
+			if(textTags[name] === true)
+			{
+				// `ch` carries one character; `r` is a line break. Both are text:
+				// the consumer needs the line structure to reflow.
+				if(name === "ch")
+				{
+					var t = tag.text;
+					if(t !== void)
+					{
+						// Attach the pending speaker INLINE. A TJS function cannot touch
+						// this function's locals (no closures), so the logic cannot be
+						// factored into a method or a nested function -- both throw.
+						// `>` cannot appear in the token body or it would end the token
+						// early; a display label does not need it, so it becomes a space.
+						if(pendingSpeaker !== "")
+						{
+							var sp = pendingSpeaker;
+							pendingSpeaker = "";
+							var safe = "";
+							var k = 0;
+							while(k < sp.length)
+							{
+								var c = sp[k];
+								safe = safe + (c === ">" ? " " : c);
+								k = k + 1;
+							}
+							pageText = pageText + "<<speaker:" + safe + ">>";
+						}
+						pageText = pageText + t;
+						hasText = true;
+					}
+				}
+				else
+				{
+					pageText = pageText + "\n";
+					hasText = true;
+				}
+				continue;
+			}
+
+			// A DRIVER: a game-specific text funnel. Consulted ONLY for tags the
+			// generic walk did not claim, so a driver can add to the dialect and
+			// can never change what the generic path already does. With no driver
+			// registered this is one array-length test per tag.
+			//
+			// Why this exists at all: the generic walk reads text from `ch`/`r`.
+			// A game that formats dialogue through MACROS produces neither -- its
+			// glyphs come from `[emb exp=...]` inside a macro body -- and its
+			// speaker from another macro. That is a property of the GAME, not of
+			// KAG, so it belongs in a per-game driver rather than in this loop.
+			var dr = driverDispatch(tag, name);
+			if(dr !== void)
+			{
+				if(dr.type === "text")
+				{
+					if(dr.text !== void && dr.text !== "")
+					{
+						// Attach the pending speaker INLINE. A TJS function cannot touch
+						// this function's locals (no closures), so the logic cannot be
+						// factored into a method or a nested function -- both throw.
+						// `>` cannot appear in the token body or it would end the token
+						// early; a display label does not need it, so it becomes a space.
+						if(pendingSpeaker !== "")
+						{
+							var sp = pendingSpeaker;
+							pendingSpeaker = "";
+							var safe = "";
+							var k = 0;
+							while(k < sp.length)
+							{
+								var c = sp[k];
+								safe = safe + (c === ">" ? " " : c);
+								k = k + 1;
+							}
+							pageText = pageText + "<<speaker:" + safe + ">>";
+						}
+						pageText = pageText + dr.text;
+						hasText = true;
+					}
+					continue;
+				}
+				if(dr.type === "meta")
+				{
+					if(dr.speaker !== void && dr.speaker !== "")
+						pendingSpeaker = dr.speaker + "";
+					continue;
+				}
+				if(dr.type === "stop")
+				{
+					// Same contract as a stop tag: publish what is in hand, then
+					// end the walk. What follows depends on the running game.
+					pageText = pageText + "<<" + (dr.token !== void ? dr.token : "flow") + ">>";
+					if(pageText !== "" && hasText)
+					{
+						publishPage(pageText);
+						pages = pages + 1;
+					}
+					pageText = "";
+					done = true;
+					continue;
+				}
+			}
+
+			// Any other tag contributes no characters and is not this machine's
+			// business to act on. Skipped, not executed.
+		}
+
+		// A walk that ended on the budget or at the end of a scenario still has
+		// a page in hand; publish it rather than dropping it. Text-free token
+		// runs are not pages (see hasText above).
+		if(pageText !== "" && hasText) { publishPage(pageText); pages = pages + 1; }
+
+		// Remember how far we got IN THIS STORAGE, so a later call from inside
+		// this stretch does not walk it again. Per storage: see coveredByStorage.
+		//
+		// A mark only moves FORWARD. A walk that stopped early (a branch, or a tag
+		// it could not evaluate) must not shrink the mark a longer earlier walk
+		// left behind, or the stretch between the two would be re-walked.
+		try
+		{
+			var pi = parser.__internal_KAGParser_instance;
+			var prev = coveredByStorage[pi.storageName];
+			if(prev === void
+			   || pi.curLine > prev[0]
+			   || (pi.curLine === prev[0] && pi.curPos > prev[1]))
+			{
+				coveredByStorage[pi.storageName] = [pi.curLine, pi.curPos];
+			}
+			haveCovered = true;
+		}
+		catch(e) { /* position bookkeeping must never break the walk */ }
+
+		return pages;
+	}
+
+	//-------------------------------------------------------------------------
+	// One page to the core, through the shim's global.
+	//
+	// A whole page in one call, not per-run: the consumer treats a page as one
+	// unit and a run as a fragment, and only the producer knows which it is
+	// emitting.
+	//
+	// A missing global costs the look-ahead and nothing else.
+	//-------------------------------------------------------------------------
+	function publishPage(text)
+	{
+		try
+		{
+			// The speaker rides IN the page, as a token, because the page is
+			// already a token stream (`<<choice>>`, `<<flow>>`, `<pause>`,
+			// `<link:...>`), emitted by the walk where the speaker changes.
+			//
+			// Why not a second argument: the publish ABI is a C struct the core
+			// copies, and a new field means versioning that struct and migrating
+			// every producer, for one optional string per page. A token costs no
+			// ABI change and degrades exactly like the others -- a consumer that
+			// does not know `<<speaker:...>>` still parses the page, it just sees
+			// an unknown token, and the text is unaffected.
+			if(global.vnovelPublishTextPage !== void)
+				global.vnovelPublishTextPage(text);
+		}
+		catch(e) { /* the look-ahead must never break the run */ }
+	}
+
+	//------------------------------------------------------------------------
+	// PER-GAME TEXT DRIVERS.
+	//
+	// A driver is a function that inspects a tag the generic walk did not claim
+	// and returns one of:
+	//
+	//   %[ type: "text",  text: "..." ]            characters for the page
+	//   %[ type: "meta",  speaker: "..." ]         page metadata
+	//   %[ type: "stop",  token: "choice" ]        end the walk here
+	//   void                                       "not mine", walk continues
+	//
+	// Registered per game id (KRKRSDL2_GAME_ID, the crc32 of the game's data
+	// file, the same value dat/vnovel.dat records). The generic walk is the
+	// DEFAULT and is never replaced: drivers only ADD to the dialect, because
+	// they are consulted after every built-in rule has declined the tag.
+	//
+	// This is where a game whose dialogue is macro-formatted says so. Such a
+	// game produces no `ch` at all -- its text arrives as `[emb exp=...]` inside
+	// a macro body -- so the generic walk publishes nothing for it while working
+	// perfectly for games that write text inline. Keeping that knowledge here
+	// means the generic walk stays generic and a new game adds a file, not a
+	// branch in this loop.
+	//------------------------------------------------------------------------
+	function driverDispatch(tag, name)
+	{
+		if(driverCount === 0) return void;
+		for(var i = 0; i < driverCount; i = i + 1)
+		{
+			try
+			{
+				var r = driverFns[i](tag, name);
+				if(r !== void) return r;
+			}
+			catch(e) { /* a driver must never break the walk */ }
+		}
+		return void;
+	}
+}
+
+// The one instance, built lazily: this file loads alongside the other
+// polyfills, and the constructor needs KAGParser to exist.
+global.vnovelLookAhead = void;
+global.vnovelLookAheadActive = false;
+
+global.vnovelLookAheadPeek = function(live)
+{
+	if(global.vnovelLookAhead === void)
+		global.vnovelLookAhead = new VNovelLookAhead();
+	return global.vnovelLookAhead.peekFrom(live);
+};
+
+// Which game this is, for driver selection: the crc32 of the game's data file,
+// exported by the core (the same id dat/vnovel.dat records). Lower-case hex,
+// e.g. "71604817". Undefined when the host supplied none, in which case no
+// driver matches and the generic walk runs -- the documented degradation.
+global.vnovelGameId = void;
+
+// Register a per-game text driver.
+//
+//     vnovelRegisterTextDriver(["71604817"], function(tag, name) { ... });
+//
+// Ids are matched against vnovelGameId; an empty id list means "always". A
+// driver registered by a game's own override file is therefore scoped to that
+// game by construction, and one shipped in the polyfill can name its ids.
+//
+// Registering twice adds twice (drivers are consulted in order, first non-void
+// answer wins), so a game override can supersede a generic rule by registering
+// first -- it is loaded before the walk's first run either way.
+global.vnovelRegisterTextDriver = function(ids, fn)
+{
+	if(fn === void) return false;
+	var want = false;
+	if(ids === void || ids === null) want = true;
+	else if(typeof(ids) === "String") want = (ids === "" || ids === global.vnovelGameId);
+	else
+	{
+		var i = 0;
+		while(!want && i < ids.length)
+		{
+			if(ids[i] === global.vnovelGameId) want = true;
+			i = i + 1;
+		}
+	}
+	if(!want) return false;
+	if(global.vnovelLookAhead === void)
+		global.vnovelLookAhead = new VNovelLookAhead();
+	var la = global.vnovelLookAhead;
+	// Expose the walk's private parser to drivers: `emb`/`eval` expressions must
+	// be evaluated against the macro frame the WALK pushed, which only exists on
+	// this object. Read-only by convention -- a driver must not walk, publish or
+	// assign through it.
+	global.vnovelLookAheadParser = la.parser;
+	la.driverFns[la.driverCount] = fn;
+	la.driverCount = la.driverCount + 1;
+	return true;
+};

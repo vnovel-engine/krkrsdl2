@@ -317,8 +317,9 @@ tTVPPlugin::tTVPPlugin(const ttstr & name, ITSSStorageProvider *storageprovider)
 		}
 		if (TVPIsEngineStubPlugin(name))
 		{
-			std::string nm; TVPUtf16ToUtf8(nm, name.AsStdString());
-			fprintf(stderr, "TVPLoadPlugin: '%s' simulated by engine stub\n", nm.c_str());
+			/* Silence: a stub is a normal, successful outcome (the plugin is
+			 * linked as a no-op) and games link several, so a line per stub is
+			 * boot noise, not information. */
 			return; // successfully "linked" as a no-op
 		}
 		/* Unknown plugin: preserve KiriKiri semantics and throw so that games
@@ -543,9 +544,10 @@ void TVPLoadPlugin(const ttstr & name)
 	// are all irrelevant here — the behaviour is compiled in.
 	if (TVPIsBuiltinPlugin(name))
 	{
-		std::string nm;
-		TVPUtf16ToUtf8(nm, name.AsStdString());
-		fprintf(stderr, "TVPLoadPlugin: '%s' supplied by engine (builtin)\n", nm.c_str());
+		/* No log line: this fires once per plugin a game links, is a normal
+		 * outcome (the behaviour is compiled in), and a game linking a dozen
+		 * plugins would put a dozen lines in every boot log. A plugin that is
+		 * NOT built in is reported by the loader's failure path instead. */
 		TVPInstallBuiltinPlugin(name);
 		return;
 	}
@@ -617,7 +619,6 @@ static void TVPSearchPluginsAt(std::vector<tTVPFoundPlugin> &list, const tjs_str
 		folder_str += (char)(unsigned char)c;
 	}
 	DIR *dir = opendir(folder_str.c_str());
-	fprintf(stderr, "TVPSearchPluginsAt: '%s' dir=%p\n", folder_str.c_str(), dir);
 	if (!dir) return;
 	struct dirent *ent;
 	while ((ent = readdir(dir)) != NULL)
@@ -649,7 +650,6 @@ void TVPLoadPluigins(void)
 	tjs_string exepath = IncludeTrailingBackslash(ExtractFileDir(ExePath()));
 	/* Fix Windows-style backslashes to forward slashes for Linux */
 	std::replace(exepath.begin(), exepath.end(), '\\', '/');
-	fprintf(stderr, "TVPLoadPluigins: exepath len=%d\n", (int)exepath.length());
 	TVPSearchPluginsAt(list, exepath);
 	TVPSearchPluginsAt(list, exepath + TJS_W("system/"));
 	TVPSearchPluginsAt(list, exepath + TJS_W("plugin/"));
@@ -657,18 +657,6 @@ void TVPLoadPluigins(void)
 	TVPAutoLoadPluginCount = (tjs_int)list.size();
 	for (auto i = list.begin(); i != list.end(); i++)
 	{
-#ifdef TVP_DEBUG_PROBES
-		/* Name the plugin about to be loaded. A crash inside TVPLoadPlugin
-		 * otherwise leaves no record of *which* plugin caused it, and the list
-		 * is sorted so the order is not obvious from the directory. Flushed,
-		 * because the process may die before the buffer is drained. */
-		{
-			std::string nm;
-			TVPUtf16ToUtf8(nm, i->Name);
-			fprintf(stderr, "PLUGIN-LOAD next='%s'\n", nm.c_str());
-			fflush(stderr);
-		}
-#endif
 		TVPAddImportantLog(ttstr(TJS_W("(info) Loading ")) + ttstr(i->Name));
 		TVPLoadPlugin(i->Path + i->Name);
 	}

@@ -40,6 +40,15 @@ extrans.dll       -   @builtin:extrans   0   # transitions: mosaic and wave
 #                                  (@prick/@prickT, @wave/@waveT). Without a
 #                                  handler StartTransition throws and the scene
 #                                  aborts, so this is not cosmetic.
+krmovie.dll       -   -   0   # movie playback (KiriKiri's own krmovie). Games
+#                                  link it unguarded at boot: NORA! V1.02 run the
+#                                  link inside MainWindow's plugin loop and died
+#                                  with "Cannot load Plugin krmovie.dll" before a
+#                                  single line of dialogue. The engine has its own
+#                                  movie layer, so the link must simply succeed;
+#                                  a game that then plays a movie will show none.
+krflash.dll       -   -   0   # Flash playback, same shape and reason as the
+#                                  above (NORA! links it in the same boot block).
 util.dll          -   -   0   # TYPE-MOON IME/window helper (Fate, unguarded link)
 slideopen.dll     -   -   0   # open/close animation (cosmetic)
 menuitem.dll      -   -   0   # native window menu class; stubbed
