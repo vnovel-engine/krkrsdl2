@@ -81,6 +81,10 @@ extern "C" int SHIM_LINK(extrans)(iTVPFunctionExporter *);
 extern "C" int SHIM_UNLINK(extrans)(void);
 extern "C" int SHIM_LINK(textstream)(iTVPFunctionExporter *);
 extern "C" int SHIM_UNLINK(textstream)(void);
+extern "C" int SHIM_LINK(filter)(iTVPFunctionExporter *);
+extern "C" int SHIM_UNLINK(filter)(void);
+extern "C" int SHIM_LINK(slideopen)(iTVPFunctionExporter *);
+extern "C" int SHIM_UNLINK(slideopen)(void);
 
 namespace {
 
@@ -119,6 +123,17 @@ const BuiltinShim g_builtin_shims[] = {
 	  "vnovelPublishTextPage hand parsed text to the shell's run sink, for a "
 	  "consumer that re-lays-out the text rather than viewing the engine's "
 	  "pixels" },
+	{ "filter",
+	  SHIM_LINK(filter),
+	  SHIM_UNLINK(filter),
+	  "TYPE-MOON's image-filter surface (Stretch, Haze, Contrast, Noise, Lens, "
+	  "Blur, Smudge, update): pixel passes over a Layer, offered as TJS "
+	  "globals" },
+	{ "slideopen",
+	  SHIM_LINK(slideopen),
+	  SHIM_UNLINK(slideopen),
+	  "the slide-open transition (initSlideOpen, drawSlideOpen, "
+	  "finishSlideOpen): panels close in over a destination Layer" },
 	{ nullptr, nullptr, nullptr, nullptr },
 };
 

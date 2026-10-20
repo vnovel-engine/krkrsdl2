@@ -35,11 +35,15 @@ fstat.dll         -   -   0
 layereximage.dll  -   -   0
 wuvorbis.dll      -   -   0   # engine supplies the Vorbis decoder
 adjustmoni.dll    -   -   0   # cosmetic brightness/contrast
-extrans.dll       -   @builtin:extrans   0   # transitions: mosaic and wave
-#                                  are requested by name from the scenarios
-#                                  (@prick/@prickT, @wave/@waveT). Without a
-#                                  handler StartTransition throws and the scene
-#                                  aborts, so this is not cosmetic.
+extrans.dll       -   @builtin:extrans   0   # transitions: all seven handlers the
+#                                  plugin registers (mosaic, wave, ripple, turn,
+#                                  rotatezoom, rotatevanish, rotateswap). Fate
+#                                  requests mosaic (@prick/@prickT) and wave
+#                                  (@wave/@waveT) by name through @trans; the
+#                                  other five are registered for the later titles
+#                                  that use them. Without a handler
+#                                  StartTransition throws and the scene aborts at
+#                                  that tag, so a missing name is not cosmetic.
 krmovie.dll       -   -   0   # movie playback (KiriKiri's own krmovie). Games
 #                                  link it unguarded at boot: NORA! V1.02 run the
 #                                  link inside MainWindow's plugin loop and died
@@ -50,7 +54,11 @@ krmovie.dll       -   -   0   # movie playback (KiriKiri's own krmovie). Games
 krflash.dll       -   -   0   # Flash playback, same shape and reason as the
 #                                  above (NORA! links it in the same boot block).
 util.dll          -   -   0   # TYPE-MOON IME/window helper (Fate, unguarded link)
-slideopen.dll     -   -   0   # open/close animation (cosmetic)
+slideopen.dll     -   @builtin:slideopen   0   # open/close animation: the panels
+#                                  are drawn into a Layer buffer by
+#                                  initSlideOpen/drawSlideOpen/finishSlideOpen, so
+#                                  a no-op link loses the transition rather than
+#                                  degrading it.
 menuitem.dll      -   -   0   # native window menu class; stubbed
 drawer.dll        -   @builtin:drawer   0   # FlowChart/gallery drawing helper:
 #                                  drawLine/drawAALine/drawAATriangle rasterise
@@ -63,7 +71,13 @@ firespark.dll     -   @builtin:firespark   0   # spark effect (Fate), drawn into
 
 # --- archive-decryption plugin: installs the XP3 extraction filter ---
 cxdec.tpm         -   -   0   # Fate/stay night (TYPE-MOON)
-filter.dll        -   -   0   # same, other builds
+filter.dll        -   @builtin:filter   0   # image filters (Stretch, Haze,
+#                                  Contrast, Noise, Lens, Blur, Smudge, update).
+#                                  The game reaches these by name through
+#                                  FilterPlugin.ks / HazePlugin.ks /
+#                                  NoisePlugin.ks / DashPlugin.ks, and a call to
+#                                  an undefined name throws and aborts the scene,
+#                                  so the surface must exist.
 
 # --- voice patch (mirror moon / phiber) ---
 # Fate/stay night's English patch links this unguarded in Override.tjs, so a

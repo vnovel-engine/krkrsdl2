@@ -78,7 +78,14 @@ struct BuiltinShim {
 	const char *name;             // the name used in `@builtin:<name>`
 	BuiltinShimLinkProc link;
 	BuiltinShimUnlinkProc unlink; // may be null
-	const char *description;      // one line, for the log
+	const char *description;      // one line, for the log. MUST be plain ASCII:
+//                               it is handed to ttstr(const char *), which
+//                               decodes it in the ANSI codepage — a UTF-8
+//                               byte there either throws
+//                               (Cannot convert given narrow string to wide
+//                               string) or is silently mojibake, and either
+//                               one aborts the plugin link the shim exists to
+//                               satisfy.
 };
 
 // True when `replacement` is the `@builtin:<name>` form, and if so points

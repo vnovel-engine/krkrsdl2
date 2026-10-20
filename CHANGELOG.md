@@ -18,6 +18,56 @@ see their `LINEAGE.md`.
 
 ## Unreleased
 
+### Visual-effects shims: `filter`, `slideopen`, and the three missing `extrans` handlers
+
+Fate/stay night's effect reel (`~/VN/fate-fx`) exercises every visual effect the
+game's Windows DLL plugins and its own effect scripts provide. Three surfaces
+were missing from this fork, and each aborted the scene at the tag that reached
+it, because a KAG tag handler that raises stops the scenario there:
+
+- **`filter.dll`** published twelve TJS globals (`Stretch`, `initHaze`,
+  `doHaze`, `endHaze`, `Contrast`, `Noise`, `InitLens`, `ReleaseLens`, `Lens`,
+  `Blur`, `Smudge`, `update`) and the override table answered its link with a
+  plain no-op, leaving every one of them undefined. `ConditionPlugin.ks` /
+  `HazePlugin.ks` / `NoisePlugin.ks` / `DashPlugin.ks` call them **by name**,
+  so the first `Smudge` or `Stretch` in a scene raised
+  `Member "Stretch" does not exist` and the scene died there. Now a built-in
+  shim (`src/shims/filter.cpp`), implemented from the decompiled plugin and the
+  engine's own pixel primitives.
+- **`slideopen.dll`** (`initSlideOpen` / `drawSlideOpen` / `finishSlideOpen`)
+  was likewise a no-op; the game's `SlideOpenPlugin.ks` drives it for every
+  open/close transition. Now `src/shims/slideopen.cpp`.
+- **`extrans`** registered only `mosaic` and `wave` — the two Fate itself
+  requests — and stated in a comment that the other five "can never run here".
+  That is not true of the engine: the shipped plugin registers **seven**
+  handlers (`mosaic`, `wave`, `ripple`, `turn`, `rotatezoom`, `rotatevanish`,
+  `rotateswap` — upstream `RegisterRotateTransHandlerProvider` spawns three
+  providers, rotatetrans.cpp:487-493), and a later TYPE-MOON title on this
+  engine can request any of them. All seven are now ported faithfully from the
+  upstream `src/plugins/win32/extrans` source (including `turn`'s 64×64
+  generated table, transcribed byte-for-byte).
+
+Two bugs were found and fixed while verifying, both worth recording:
+
+- **A shim's `BuiltinShim::description` must be plain ASCII.** It is handed to
+  `ttstr(const char *)`, which decodes in the ANSI codepage; a UTF-8 em-dash in
+  the string threw `Cannot convert given narrow string to wide string` from
+  inside `TVPInstallBuiltinShim`, so the shim's `V2Link` never ran and the
+  plugin link failed — with the failure surfacing at the *game's* line, not
+  here. `BuiltinShims.h` now states the constraint at the field.
+- **Ported pixel code must treat the pitch as signed.** `ripple`'s border-fold
+  transform declared its per-pixel offset `tjs_uint`; with this engine's
+  bottom-up bitmap the pitch is negative (an 800×600 layer reports −3200), so
+  `x*4 + y*pitch` wrapped to a huge positive offset and the transform
+  segfaulted. Windows' DIB pitch is positive, so the upstream source's unsigned
+  type was harmlessly correct there. Now `tjs_int`; the two other offset sites
+  in the file were already signed and were checked.
+
+The reel now runs all **51** effects end to end with no failure and no skip, and
+loops. `src/shims/EXTRANS-HANDLERS.md` records the handler-name and option-key
+cross-check between the upstream source and the shipped binary, including the
+correction that the binary registers seven handlers rather than five.
+
 ### Changed
 
 - `MenuItem.visible` is item-level only and is no longer forwarded to the host
