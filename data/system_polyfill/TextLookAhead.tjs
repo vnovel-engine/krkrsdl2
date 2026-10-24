@@ -84,6 +84,23 @@ class VNovelLookAhead
 	var linkTags;      // tagnames that open/close a clickable region
 	var budget;        // tag limit per walk, so a pathological script cannot hang
 
+	// THE MARKUP SENTINEL (0x01), prefixed to every markup token this walk
+	// emits. The client's tokenizer requires it (see vnovel-client's
+	// browser/index.html, `const MARK = "\x01"`) and the ONS/PON walk emits it
+	// (ONScripterLookAhead.h, LA_MARK/la_add_mark), so WITHOUT it on this side
+	// the two producers of ONE protocol disagreed: Fate's pages arrived with
+	// bare `<pause>`/`<clear>`/`<<choice>>`, which a conforming consumer reads
+	// as PROSE -- the literal characters `<pause>` rendered in the middle of a
+	// sentence, and none of the page's waits recognized. Measured: every Fate
+	// page carried 0 sentinel bytes against 4-6 markup tokens, while the ONS
+	// fixture's single page carried one before `<<choice>>`.
+	//
+	// 0x01 is safe: KAG's own text renderer consumes it as markup (it is
+	// ScriptHandler's TXTBTN_START on the ONS side), so it can never arrive as
+	// literal content, and a scenario that writes `<pause>` in prose stays text
+	// because only a sentinel introduces a mark.
+	var sentinel;
+
 	// Where each walk finished, PER STORAGE, so a call from inside an already
 	// covered stretch returns without walking again.
 	//
@@ -197,6 +214,11 @@ class VNovelLookAhead
 		// script with no branch and no boundary so the engine thread cannot be
 		// hung. A normal walk is far below it.
 		budget = 20000;
+
+		// The markup sentinel. See the field's note: `\x01` escape, not a raw
+		// byte in this file, so the polyfill stays printable (and the file must
+		// keep its BOM -- see the load note in ScriptMgnIntf.cpp).
+		sentinel = "\x01";
 
 		haveCovered = false;
 		coveredByStorage = %[];
@@ -326,7 +348,7 @@ class VNovelLookAhead
 			// depends on the running game, so it is not determinable.
 			if(stopTags[name] !== void)
 			{
-				pageText = pageText + "<<" + stopTags[name] + ">>";
+				pageText = pageText + mark("<<" + stopTags[name] + ">>");
 				// A `<<flow>>` page with no characters in it carries nothing:
 				// it only says the walk reached a control-flow tag, which is
 				// true of every @call/@if/@jump during boot. Publishing those
@@ -348,7 +370,7 @@ class VNovelLookAhead
 			// next page's text is just as determined as this one's.
 			if(clearTags[name] === true)
 			{
-				pageText = pageText + "<clear>";
+				pageText = pageText + mark("<clear>");
 				// Same rule as the flow token above: a clear with no text on the
 				// page is not a page, only a boundary the boot sequence crossed.
 				if(pageText !== "" && hasText)
@@ -366,7 +388,7 @@ class VNovelLookAhead
 			// what they do.
 			if(pauseTags[name] !== void)
 			{
-				pageText = pageText + "<" + pauseTags[name] + ">";
+				pageText = pageText + mark("<" + pauseTags[name] + ">");
 				continue;
 			}
 
@@ -377,13 +399,13 @@ class VNovelLookAhead
 			{
 				var tgt = tag.target;
 				if(tgt === void) tgt = "";
-				pageText = pageText + "<link:" + tgt + ">";
+				pageText = pageText + mark("<link:" + tgt + ">");
 				inLink = true;
 				continue;
 			}
 			if(name === "endlink")
 			{
-				pageText = pageText + "</link>";
+				pageText = pageText + mark("</link>");
 				inLink = false;
 				continue;
 			}
@@ -414,16 +436,38 @@ class VNovelLookAhead
 								safe = safe + (c === ">" ? " " : c);
 								k = k + 1;
 							}
-							pageText = pageText + "<<speaker:" + safe + ">>";
+							pageText = pageText + mark("<<speaker:" + safe + ">>");
 						}
 						pageText = pageText + t;
-						hasText = true;
+						// Only a VISIBLE character makes the page "have text".
+						// A run of spaces is indentation, not content: a page
+						// that is nothing but indentation was never on screen,
+						// and publishing one consumed a consumer's pause slot
+						// and shifted every page after it. Measured on Fate:
+						// `\n\n\n\n\n\n      ` arrived as PAGE(14).
+						//
+						// The spaces are still appended -- they are the page's
+						// line structure -- they just do not by themselves
+						// claim the page exists.
+						if(t !== " " && t !== "\t")
+							hasText = true;
 					}
 				}
 				else
 				{
+					// A LINE BREAK is structure, not content. It keeps the
+					// page's line shapes (a reflow needs them) but must NOT by
+					// itself make the page "have text": otherwise a run of
+					// `r`/`br` tags with no characters publishes a page whose
+					// whole content is newlines. Measured on Fate: the sequence
+					// `\n\n\n\n\n<<flow>>` was published as its own PAGE, and
+					// since a client shows one page per engine pause, that empty
+					// page consumed a pause slot and shifted every page after it.
+					//
+					// The ONS/PON walk has the same rule and states it in the
+					// same words ("it must not by itself make the page 'have
+					// text'"); this side had it inverted.
 					pageText = pageText + "\n";
-					hasText = true;
 				}
 				continue;
 			}
@@ -462,7 +506,7 @@ class VNovelLookAhead
 								safe = safe + (c === ">" ? " " : c);
 								k = k + 1;
 							}
-							pageText = pageText + "<<speaker:" + safe + ">>";
+							pageText = pageText + mark("<<speaker:" + safe + ">>");
 						}
 						pageText = pageText + dr.text;
 						hasText = true;
@@ -479,7 +523,7 @@ class VNovelLookAhead
 				{
 					// Same contract as a stop tag: publish what is in hand, then
 					// end the walk. What follows depends on the running game.
-					pageText = pageText + "<<" + (dr.token !== void ? dr.token : "flow") + ">>";
+					pageText = pageText + mark("<<" + (dr.token !== void ? dr.token : "flow") + ">>");
 					if(pageText !== "" && hasText)
 					{
 						publishPage(pageText);
@@ -521,6 +565,21 @@ class VNovelLookAhead
 		catch(e) { /* position bookkeeping must never break the walk */ }
 
 		return pages;
+	}
+
+	//-------------------------------------------------------------------------
+	// Emit a markup token: the sentinel, then the token. EVERY token this walk
+	// puts into a page goes through here, so the sentinel cannot be forgotten at
+	// one site -- which is exactly how this walk came to disagree with ONS/PON
+	// (see the `sentinel` field's note).
+	//
+	// The sentinel IS the contract: a consumer reads a token only when the byte
+	// precedes it, and everything else is prose. That is what lets a scenario
+	// literally write `<pause>` without the client mangling it.
+	//-------------------------------------------------------------------------
+	function mark(s)
+	{
+		return sentinel + s;
 	}
 
 	//-------------------------------------------------------------------------

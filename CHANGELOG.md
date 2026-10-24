@@ -128,6 +128,25 @@ or motionless test image:
 Both are recorded here, and at the code sites, instead of being silently
 carried or fixed unverified.
 
+### Fixed
+
+- **The text look-ahead's pages carry the markup sentinel the client protocol
+  requires.** `TextLookAhead.tjs` emitted its tokens bare (`<pause>`, `<clear>`,
+  `<<choice>>`, `<link:…>`), while the protocol — and the shared ONS/PON walk
+  (`ONScripterLookAhead.h`, `LA_MARK`) — prefix every markup token with `0x01` so
+  a page's prose can never be mistaken for markup. A conforming consumer reads a
+  token only when the sentinel precedes it, so Fate's pages arrived with the
+  literal characters `<pause>` rendered mid-sentence and none of the page's waits
+  recognized. Measured before: 0 sentinel bytes against 4–6 markup tokens in every
+  page. All emissions now go through one `mark()` helper, so a site cannot forget
+  the byte again.
+- **A page must carry a visible character.** A run of `r` tags (`\n\n\n\n\n`) or a
+  stretch of indentation was published as its own page. A consumer shows one page
+  per engine pause, so such a page consumed a pause slot and shifted every page
+  after it. The line break is still appended — it is the page's line structure —
+  it just no longer claims the page exists by itself; the same rule the ONS/PON
+  walk already states.
+
 ### Changed
 
 - `MenuItem.visible` is item-level only and is no longer forwarded to the host
