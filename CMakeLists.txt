@@ -67,6 +67,17 @@ if(KRKRSDL2_BUILTIN_SHIMS)
 add_compile_definitions(KRKRSDL2_BUILTIN_SHIMS)
 endif()
 
+# The development wire protocol (the text stream out, navigation intents in).
+# The shim that publishes the flow/edge records must agree with the core: with
+# this OFF its publish calls are local no-ops (src/shims/textstream.cpp), so a
+# build that defines it for the core and not here would listen on the socket and
+# never emit anything. The core's Makefile passes -DVNOVEL_DEVWIRE when it builds
+# with DEVWIRE=1, which CMake takes as this cache variable.
+option(VNOVEL_DEVWIRE "Compile the development wire protocol into the engine" OFF)
+if(VNOVEL_DEVWIRE)
+add_compile_definitions(VNOVEL_DEVWIRE)
+endif()
+
 # mingw: prefix holding the static libogg/libvorbis the Windows DLL links
 # (built by tools/build-mingw-vorbis.sh). Kept as a variable rather than a
 # hardcoded /tmp path so a clean machine can place it anywhere.

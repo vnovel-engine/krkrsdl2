@@ -138,6 +138,14 @@ class VNovelLookAhead
 			"er" => true
 		];
 
+		// `l` is here because it is a reader wait the page does NOT end at: KAG
+		// breaks a line (`[l]`) and waits for the reader to continue, exactly as
+		// `[p]` does -- and the engine emits an `<<<lp>>>` edge for each one.
+		// Without `l` the token stream and the edge stream disagree: measured on
+		// Fate's disclaimer, 7 `<<<lp>>>` edges against a page carrying ZERO
+		// `<pause>` markers, so a consumer had nothing to stop at and typed the
+		// whole page out in one go.
+		//
 		// A PAUSE is emitted INTO the page as an explicit token, and the walk
 		// CONTINUES: a click-wait does not change which text comes next, so the
 		// text after it is still determinable. This is the spec's "pauses in our
@@ -145,6 +153,7 @@ class VNovelLookAhead
 		// the reader must interact, and the engine still paces the display.
 		pauseTags = %[
 			"p"    => "pause",
+			"l"    => "pause",
 			"wait" => "pause",
 			"click" => "pause"
 		];
@@ -638,4 +647,132 @@ global.vnovelRegisterTextDriver = function(ids, fn)
 	la.driverFns[la.driverCount] = fn;
 	la.driverCount = la.driverCount + 1;
 	return true;
+};
+
+//-------------------------------------------------------------------------
+// Page-flow edges for the core's page flow contract (<lp> / <pp>).
+//
+// TWO KINDS, because they are different actions for a consumer. KAG pauses the
+// reader at `[l]` (line break: the SAME page continues below) and at `[p]`
+// (page break: the page ENDS). The walk publishes ONE page containing both, so
+// a page can carry several `[l]` waits -- measured on Fate's disclaimer, 1 page
+// against 7 waits. A consumer told only "a pause happened" cannot tell whether
+// to reveal more of the current page or to move on to the next one, and gets it
+// wrong in one direction or the other. So the KIND travels with the edge:
+//
+//   `[l]` -> kind 0 (<lp>, an in-page line pause)
+//   `[p]` -> kind 1 (<pp>, a page pause)
+//
+// WHY THE TAG PATH, NOT A KAG RUNTIME HOOK
+//
+// KiriKiri arms a reader text pause in C++-side TJS (MainWindow.showPageBreak
+// / showLineBreak -> conductor.wait(%[click: ...]), returning -2), not through
+// a symbol this polyfill overrides. There is no conductor method in the
+// polyfill's reach that fires exactly at "page drawn, waiting for the reader"
+// and nothing else. The one place the polyfill DOES see the live game's tags
+// is the getNextTag hook (KAGParser.tjs), which dispatches EVERY tag the live
+// Conductor is about to act on -- including the game's own `[p]` / `[l]`.
+// That tag IS the "page on screen, reader must click" event, by definition of
+// KAG: [p] calls showPageBreak, [l] calls showLineBreak (reference copy,
+// tools/krkr_test/system/MainWindow.tjs:4118-4201). So the tag path is the
+// reliable, stock-API place to publish 1, with no game cooperation.
+//
+// THE 0 EDGE
+//
+// The resume is not a tag -- it is conductor.trigger('click') from the reader's
+// click, processed in window.onPrimaryClick. But the FIRST tag the Conductor
+// dispatches after a [p]/[l] means the click happened and the script is running
+// again, so that next getNextTag is exactly where 0 is published. It is latched
+// on a one-line flag (vnovelPageFlowPaused): publish 1 sets it, the next call
+// sees it set, publishes 0, clears it. That is the edge pair, not state
+// tracking -- there is no payload and no count.
+//
+// WHY THIS CANNOT FIRE MID-TYPING OR FOR A TIMED WAIT
+//
+//   * Mid-typing: the typewriter emits `ch` tags, one per glyph. `ch` is not
+//     in the pause set, so a typing `ch` after a [p]/[l] publishes 0 (the
+//     reader clicked to resume) and never publishes 1. The 1 is only ever
+//     published at the [p]/[l] tag itself.
+//   * Timed/trigger waits: [wait], [waittrig], [waitclick] are deliberately
+//     NOT in the pause set -- they are timed or trigger waits, not reader
+//     text pauses, so publishing 1 for them would reveal a page the engine
+//     is still resolving. [cm]/[ct]/[er] clear the message layer (a boundary,
+//     not a pause) and [s] is an execution stop (a choice is resolved there),
+//     so none of them arm a reader text pause either.
+//
+// TOLERANCE
+//
+// Guarded exactly as the walk is: the publish global comes from another file
+// whose load order is not guaranteed, so a missing member throws in TJS and is
+// swallowed. A failure here must never break the game.
+//-------------------------------------------------------------------------
+global.vnovelPageFlowPaused = false;
+
+// A page BOUNDARY (`<<<ps>>>` / `<<<pe>>>`), which is NOT a wait. In KAG a page is
+// delimited by the CLEAR tags -- the message layer is emptied, so one page ends
+// and the next begins (the same `clearTags` the walk uses) -- and the reader's
+// `[p]`/`[l]` are the WAITS, published separately. A script that runs a page into
+// the next through a clear tag without any `[p]`/`[l]` pauses nowhere, and this is
+// what still records the boundary for a consumer.
+// The page-event vocabulary (src/engine_bridge.h, VNOVEL_EV_*), which is also
+// the client's wire vocabulary (src/devsock.h): ONE list, so this side names the
+// same events rather than keeping a second list in step.
+global.vnovelEV_PAGE_START  = 0;
+global.vnovelEV_PAGE_END    = 1;
+global.vnovelEV_LINE_PAUSE  = 2;
+global.vnovelEV_PAGE_PAUSE  = 3;
+global.vnovelEV_RESUME      = 4;
+
+global.vnovelPageEdge = function(tagname)
+{
+	var isClear = (tagname === "cm" || tagname === "ct" || tagname === "er");
+	if(!isClear) return;
+	try
+	{
+		if(global.vnovelPublishPageEvent !== void)
+		{
+			global.vnovelPublishPageEvent(global.vnovelEV_PAGE_END);
+			global.vnovelPublishPageEvent(global.vnovelEV_PAGE_START);
+		}
+	}
+	catch(e) { /* must never break the game */ }
+};
+
+global.vnovelPageFlowEdge = function(tagname)
+{
+	// The only tags that arm a reader text pause. Stock KAG: [p] -> showPageBreak,
+	// [l] -> showLineBreak (MainWindow.tjs:4118-4201). Nothing else in this set:
+	// not wait/waittrig/waitclick (timed/trigger), not cm/ct/er (clear), not s
+	// (stop/choice).
+	// The only tags that arm a reader text pause, and their kind.
+	var isPause = (tagname === "p" || tagname === "l");
+	// Which kind: `[p]` ends the page, `[l]` continues it. See the note above.
+	var kind = (tagname === "p") ? 1 : 0;
+
+	// The FIRST tag after a pause was armed means the reader acted (the click
+	// resumed the conductor) and the script is running again. Publish 0 here,
+	// before anything else, so the edge pair closes on resume.
+	if(global.vnovelPageFlowPaused && !isPause)
+	{
+		try
+		{
+			if(global.vnovelPublishPageEvent !== void)
+				global.vnovelPublishPageEvent(global.vnovelEV_RESUME);
+		}
+		catch(e) { /* must never break the game */ }
+		global.vnovelPageFlowPaused = false;
+	}
+
+	if(isPause)
+	{
+		try
+		{
+			if(global.vnovelPublishPageEvent !== void)
+				global.vnovelPublishPageEvent(kind === 1
+					? global.vnovelEV_PAGE_PAUSE
+					: global.vnovelEV_LINE_PAUSE);
+		}
+		catch(e) { /* must never break the game */ }
+		global.vnovelPageFlowPaused = true;
+	}
 };

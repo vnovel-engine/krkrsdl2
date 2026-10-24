@@ -2233,8 +2233,24 @@ class KAGParser
 			global.vnovelLookAheadActive = false;
 		}
 
+		// The page EVENTS (see system_polyfill/TextLookAhead.tjs). The LIVE tag
+		// about to be dispatched -- `res.tagname` -- is the only place the polyfill
+		// sees the game's own [p]/[l]/[cm], so both the waits and the page
+		// boundaries are published here. Two handlers, one vocabulary: the events
+		// they publish are the same list the client speaks (src/devsock.h).
+		// Guarded the same way: the globals come from another file whose load
+		// order is not guaranteed.
+		try
+		{
+			if (global.vnovelPageFlowEdge !== void && res.tagname !== void)
+				global.vnovelPageFlowEdge(res.tagname);
+			if (global.vnovelPageEdge !== void && res.tagname !== void)
+				global.vnovelPageEdge(res.tagname);
+		}
+		catch (e) { /* must never break the game */ }
+
 		return res;
-	}
+}
 
 	/**
 	 * @summary Copy of KAGParser object

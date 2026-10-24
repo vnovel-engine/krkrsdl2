@@ -120,6 +120,22 @@ extern "C" void krkr_set_clock(long long (*fn)(void)) { krkrsdl2_clock_fn = fn; 
  * (0 = off, 1 = skip, 2 = auto-read) so the core can show its mode indicator.
  * Updated on the engine thread (TJS is not thread-safe); see process_events. */
 extern "C" volatile int krkrsdl2_auto_mode = 0;
+/* Inbound navigation intent from the development socket (select N). The core's
+ * devsock consumer calls krkr_push_select(n) on the frontend thread, which
+ * stores the 1-based ordinal here. The engine takes it on its own thread in
+ * process_events (TJS is not thread-safe, same reason as autoMode above), then
+ * resets it to 0. A newer intent overwrites an older one: the socket has one
+ * consumer, so the latest select is what the user meant. */
+extern "C" volatile int krkrsdl2_pending_select = 0;
+/* The shell's navigation-result publisher (engine_bridge.c). Declared by hand,
+ * at file scope: the engine compiles without the shell's headers, and the
+ * symbol resolves at the core's final link exactly as vnovel_publish_text_run
+ * does — see the shim's own declaration in
+ * src/shims/textstream.cpp. It cannot be declared locally in process_events():
+ * `extern "C"` is a linkage specification, so it may only appear at namespace
+ * scope (measured: "expected unqualified-id before string constant"). */
+extern "C" void vnovel_publish_nav_result(int ordinal, int accepted);
+
 /* Set when the game itself terminates (KAG `[close]` -> window close ->
  * TVPTerminateAsync -> IsTarminate). The engine blanks the framebuffer before
  * the loop unwinds, so the core can show an empty screen and stay parked
@@ -3513,6 +3529,124 @@ static bool process_events()
 		}
 	}
 #endif
+#ifdef KRKRSDL2_LIBRETRO
+	/* Inbound navigation: the development socket's `select N` reaches the
+	 * engine through krkrsdl2_pending_select (set on the frontend thread). Take
+	 * it here, on the engine thread, and perform the selection the same way a
+	 * click does - kag.current.processLink(n-1) - which is what
+	 * MessageLayer.internalOnMouseDown resolves a hit-test into. The layer's
+	 * own processLink refuses an absent link (links[n] === void), so the verdict
+	 * is read back as a bool: the script returns true when it took the link,
+	 * false when the link was missing or kag was not ready.
+	 *
+	 * Written against STOCK KAG API: kag.current is the active MessageLayer,
+	 * links[]/numLinks are its choice array, processLink is its click handler.
+	 * A real game ships its own MessageLayer.tjs, so the guards must hold
+	 * against any conformant layer, not just the fixture copy in
+	 * tools/krkr_test/system. A missing kag/current/processLink reports a
+	 * refusal (accepted=0) rather than throwing, so a consumer learns "no such
+	 * choice" instead of silence. */
+	if (krkrsdl2_pending_select)
+	{
+		int ordinal = krkrsdl2_pending_select;
+		krkrsdl2_pending_select = 0; /* take it before evaluating */
+		int accepted = 0;
+		try
+		{
+			/* Publish the ordinal to a global property the way vnovelGameId
+			 * is (ScriptMgnIntf.cpp), then evaluate a self-contained
+			 * expression that reads it back. This avoids building a TJS
+			 * string with the runtime ordinal baked in (TJS_W is a
+			 * compile-time literal macro; TJS_snprintf into a ttstr is a
+			 * second option, but a global round-trip is simpler and matches
+			 * the existing vnovelGameId precedent). The property is cleaned
+			 * up below so it does not leak across runs. */
+			iTJSDispatch2 *global = TVPGetScriptDispatch();
+			if (global)
+			{
+				tTJSVariant ord_val((tjs_int)ordinal);
+				global->PropSet(TJS_MEMBERENSURE,
+					TJS_W("vnovelPendingSelect"), nullptr,
+					&ord_val, global);
+				global->Release();
+
+				/* The ordinal is 1-based (page order); processLink takes a
+				 * 0-based index into links. The guard short-circuits before
+				 * processLink is ever called when kag/current is absent, and
+				 * processLink itself returns void for a missing link, so the
+				 * expression returns whether the link index was in bounds
+				 * (numLinks): that is the acceptance signal. processLink's
+				 * side effect (the actual goto) happens unconditionally when
+				 * in bounds, exactly as a click would. */
+				tTJSVariant v;
+				/* ONE expression, with its own try/catch, returning a code:
+				 *   1  took the link
+				 *  -3  the current layer has no links yet
+				 *  -4  the ordinal is outside the link set
+				 * -11  kag is present but not a window yet
+				 * -12  kag.current is not a message layer
+				 * -13  kag.current has no processLink
+				 * -99  the lookup itself threw
+				 *
+				 * Two TJS facts this is written around, both of which cost a
+				 * session here:
+				 *
+				 *  - READING an undeclared name THROWS (there is no implicit
+				 *    undefined), so a bare `typeof kag === "undefined"` guard
+				 *    does not survive the case it is written for. The inner
+				 *    catch is what makes -99 reachable at all.
+				 *  - `typeof` of a function object is "Object", never
+				 *    "function" (deps/krkrsdl2/data/system_polyfill/
+				 *    TextLookAhead.tjs:62), so an existence test must be
+				 *    `!== void`, not a typeof comparison. Testing
+				 *    `typeof processLink !== "function"` therefore refused a
+				 *    perfectly good layer with -13 - measured, on Fate. */
+				TVPExecuteExpression(TJS_W(
+					"((function() { try { "
+					"var k = kag; "
+					"if (k === void) return -11; "
+					"if (k.current === void) return -12; "
+					"if (k.current.processLink === void) return -13; "
+					"var n = vnovelPendingSelect - 1; "
+					"if (n < 0) return -4; "
+					"if (k.current.numLinks <= 0) return -3; "
+					"if (n >= k.current.numLinks) return -4; "
+					"k.current.processLink(n); return 1; "
+					"} catch(e) { return -99; } })())"),
+					&v);
+				accepted = ((int)v == 1);
+
+				/* DIAGNOSTIC (KRKR_SELECT_DEBUG=1): a refusal code says WHICH
+				 * guard declined - 0 no kag at all, -3 the current layer has
+				 * no links yet (the typewriter has not built the set), -4 the
+				 * ordinal is outside it. "no such choice" alone cannot tell
+				 * those apart and they have different fixes. Silent by
+				 * default: this is a hot path in a shipping core. */
+				{
+					static int dbg = -1;
+					if (dbg < 0)
+						dbg = getenv("KRKR_SELECT_DEBUG") ? 1 : 0;
+					if (dbg && !accepted)
+						fprintf(stderr, "krkr select: ordinal=%d refused=%d\n",
+						        ordinal, (int)v);
+				}
+
+				/* Clear the temporary so it does not outlive the request. */
+				iTJSDispatch2 *g2 = TVPGetScriptDispatch();
+				if (g2)
+				{
+					tTJSVariant void_val;
+					g2->PropSet(TJS_MEMBERENSURE,
+						TJS_W("vnovelPendingSelect"), nullptr,
+						&void_val, g2);
+					g2->Release();
+				}
+			}
+		}
+		catch (...) { /* kag not ready yet / not a KAG game */ }
+		vnovel_publish_nav_result(ordinal, accepted);
+	}
+#endif
 
 	try
 	{
@@ -3772,6 +3906,7 @@ extern "C" void krkrsdl2_prepare_restart(void)
 	krkrsdl2_paused = 0;
 	krkrsdl2_last_poll_ms = 0;
 	krkrsdl2_fastforward = 0;
+	krkrsdl2_pending_select = 0;
 
 	/* SDL stays initialised across the restart (the engine never calls
 	 * SDL_Quit), so anything the previous run posted onto the global event

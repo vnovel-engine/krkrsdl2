@@ -101,6 +101,27 @@ typedef struct VNovelTextRun
  * measured as exactly that undefined reference. */
 extern "C" void vnovel_publish_text_run(const VNovelTextRun *run);
 
+/* Page-flow edge: 1 = a reader text wait is armed (page on screen, reader must
+ * click), 0 = it ended. Same hand-declared, C-linkage contract as the text-run
+ * symbol above, for the same reason (the engine is a separate project and does
+ * not include src/engine_bridge.h). The definition lives in engine_bridge.c. */
+// Without VNOVEL_DEVWIRE there is no wire protocol to publish to, so the calls
+// become local no-ops instead of references to symbols the build does not define.
+#ifdef VNOVEL_DEVWIRE
+extern "C" void vnovel_publish_page_event(int event);
+#else
+static inline void vnovel_publish_page_event(int) {}
+#endif
+
+// The page-event vocabulary (src/engine_bridge.h, VNOVEL_EV_*). ONE list shared
+// with the client's wire tokens (src/devsock.h) and with the other engines:
+// boundaries and waits are different events and are not interchangeable.
+#define VNOVEL_EV_PAGE_START 0
+#define VNOVEL_EV_PAGE_END   1
+#define VNOVEL_EV_LINE_PAUSE 2
+#define VNOVEL_EV_PAGE_PAUSE 3
+#define VNOVEL_EV_RESUME     4
+
 namespace
 {
 
@@ -125,10 +146,12 @@ struct Keys
 {
 	ttstr textRun;
 	ttstr textPage;
+	ttstr pageEvent;
 
 	Keys() :
 		textRun(TJS_W("vnovelPublishTextRun")),
-		textPage(TJS_W("vnovelPublishTextPage"))
+		textPage(TJS_W("vnovelPublishTextPage")),
+		pageEvent(TJS_W("vnovelPublishPageEvent"))
 	{
 	}
 };
@@ -211,6 +234,43 @@ tjs_error TJS_INTF_METHOD PublishTextPageFunc(tTJSVariant *result,
 	return kESucceed;
 }
 
+//---------------------------------------------------------------------------
+// vnovelPublishPageFlow(paused)
+//
+// A page-flow edge, not text. The TJS look-ahead calls this the instant the
+// live game arms a reader text pause (the page is on screen, the reader must
+// click) and again the instant that wait ends. The bridge keeps no payload;
+// the value is the edge (1 then 0), published ONCE per pause, exactly as
+// src/engine_bridge.h / engine_bridge.c define for the C side. A no-op when no
+// shell installed a callback, so a caller that publishes unconditionally is
+// still correct.
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// vnovelPublishPageEvent(event)
+//
+// ONE page event (VNOVEL_EV_*, src/engine_bridge.h). It replaced two functions
+// -- a pause/resume one and a boundary one -- because they were two halves of a
+// single vocabulary: the client speaks the same five events as wire tokens
+// (src/devsock.h), so the engine side is its event half rather than a second
+// list that has to be kept in step (which is how VNOVEL_FLOW_LP and
+// VNOVEL_EDGE_START came to share the value 0 and mean different things).
+//
+// A no-op when no shell installed a callback, so a caller that publishes
+// unconditionally is still correct.
+//---------------------------------------------------------------------------
+tjs_error TJS_INTF_METHOD PublishPageEventFunc(tTJSVariant *result,
+	tjs_int numparams, tTJSVariant **param, iTJSDispatch2 *objthis)
+{
+	(void)objthis;
+	if (result) result->Clear();
+
+	if (numparams < 1 || !param || !param[0])
+		return kEBadParamCount;
+
+	vnovel_publish_page_event((int)*param[0]);
+	return kESucceed;
+}
+
 } // namespace
 
 //---------------------------------------------------------------------------
@@ -231,12 +291,14 @@ SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)
 
 	tTJSNativeClassMethod *runFunc  = TJSCreateNativeClassMethod(&PublishTextRunFunc);
 	tTJSNativeClassMethod *pageFunc = TJSCreateNativeClassMethod(&PublishTextPageFunc);
-	if (!runFunc || !pageFunc)
+	tTJSNativeClassMethod *evFunc = TJSCreateNativeClassMethod(&PublishPageEventFunc);
+	if (!runFunc || !pageFunc || !evFunc)
 	{
 		// A half-registered surface is worse than none: a caller that finds one
 		// name present and the other absent would have to special-case it.
 		if (runFunc) runFunc->Release();
 		if (pageFunc) pageFunc->Release();
+		if (evFunc) evFunc->Release();
 		return SHIM_TJS_S_OK;
 	}
 
@@ -244,12 +306,14 @@ SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)
 	bool ok = true;
 	ok = TVPRegisterGlobalObject(k.textRun.c_str(), runFunc) && ok;
 	ok = TVPRegisterGlobalObject(k.textPage.c_str(), pageFunc) && ok;
+	ok = TVPRegisterGlobalObject(k.pageEvent.c_str(), evFunc) && ok;
 
 	// TVPRegisterGlobalObject keeps its own reference in the global object, so
 	// the creator's reference is dropped here (the same contract drawer.cpp
 	// documents).
 	runFunc->Release();
 	pageFunc->Release();
+	evFunc->Release();
 
 	return ok ? SHIM_TJS_S_OK : TJS_E_FAIL;
 }
@@ -259,6 +323,7 @@ SHIM_EXPORT SHIM_HIDDEN int V2Unlink(void)
 	Keys &k = K();
 	TVPRemoveGlobalObject(k.textRun.c_str());
 	TVPRemoveGlobalObject(k.textPage.c_str());
+	TVPRemoveGlobalObject(k.pageEvent.c_str());
 	return SHIM_TJS_S_OK;
 }
 
