@@ -136,4 +136,33 @@ extern void TVPPresentTextRun(const tjs_char * text, tjs_int length,
 	tjs_int shadow_level, tjs_uint32 shadow_color,
 	tjs_int shadow_ofs_x, tjs_int shadow_ofs_y);
 
+/*---------------------------------------------------------------------------*/
+/* User font options (core options `vnovel_font_face`, `_font_size`,
+ * `vnovel_font_tint`). The host resolves them; these are how the engine's
+ * drawing and font code reads them, expressed in engine types so no engine
+ * header has to know the host's.
+ *
+ * The declarations live in Present.cpp, beside the other host crossings, and
+ * return the identity when no host is attached — so a standalone engine build
+ * behaves exactly as it did before this feature. */
+
+/* Register the user-selected face, if one is selected, so a game's own
+ * face-name requests resolve onto it. Does nothing when no face is selected or
+ * no host is attached. Returns true when a face was registered. */
+extern bool TVPRegisterUserFont();
+
+/* The user's font-size scale applied to a font's pixel height. Returns `height`
+ * unchanged when no scale is set or no host is attached. A SEPARATE entry point
+ * from TVPGetUserFontSizePercent because two of the three places a height is set
+ * pass a negative value (TVP2's convention for "size, not box"): scaling the
+ * magnitude and keeping the sign is the caller's job, so this takes and returns
+ * a plain non-negative height and each caller negates as it already did. */
+extern tjs_int TVPGetUserFontScaledHeight(tjs_int height);
+
+/* `color` (0xRRGGBB) with the user's tint applied per channel. Returns `color`
+ * unchanged when the tint is at its default or no host is attached. Read by the
+ * glyph blend funnel, so every text path — message, backlog, name box, shadow —
+ * is tinted once, at one place. */
+extern tjs_uint32 TVPGetUserFontTint(tjs_uint32 color);
+
 #endif /* __TVP_PRESENT_INTF_H__ */

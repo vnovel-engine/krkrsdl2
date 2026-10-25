@@ -271,3 +271,51 @@ void TVPPresentTextRun(const tjs_char * text, tjs_int length,
 
 	TextRunCallback(&run);
 }
+
+/*---------------------------------------------------------------------------*/
+/* User font options
+ *
+ * The host (the libretro core) resolves the core options and publishes them
+ * through the bridge; these three entry points are how the engine's own code
+ * reads them, and the ONLY host declarations this file adds. Everything below
+ * returns the identity when no host is attached, so a standalone engine build
+ * (its own main(), no core) behaves exactly as it did before the feature and no
+ * engine call site needs to test for the host.
+ *
+ * Unlike the callbacks above these are not installed: they are values, read at
+ * the point of use. The face is read once, when fonts are registered; the size
+ * and the tint are read per glyph, so a frontend that changes one mid-run takes
+ * effect without a restart.
+ */
+/*---------------------------------------------------------------------------*/
+
+/* __LIBRETRO__ is the one C marker this whole tree tests for "inside the vnovel
+ * core" — the core, the two ONScripter engines and this engine's CMake build all
+ * define it (see the CMakeLists note beside the KRKRSDL2_LIBRETRO option). The
+ * fallbacks below are for a STANDALONE engine build, which has no core to
+ * resolve these against. */
+#ifdef __LIBRETRO__
+extern "C" {
+/* The bridge's helpers (see src/engine_bridge.h). Declared here rather than by
+ * including a core header: this file is compiled into the engine module, which
+ * must not depend on the core's sources, and these two functions are the whole
+ * of what it needs. */
+extern int vnovel_font_scaled_size(int size);
+extern unsigned int vnovel_font_tint_rgb(unsigned int rgb);
+}
+#else
+static inline int vnovel_font_scaled_size(int size) { return size; }
+static inline unsigned int vnovel_font_tint_rgb(unsigned int rgb) { return rgb; }
+#endif
+
+tjs_int TVPGetUserFontScaledHeight(tjs_int height)
+{
+	return (tjs_int)vnovel_font_scaled_size((int)height);
+}
+
+tjs_uint32 TVPGetUserFontTint(tjs_uint32 color)
+{
+	/* The tint helper works on 0xRRGGBB, which is what the glyph funnels carry
+	 * (alpha rides in the blend's opacity, not in the colour). */
+	return (tjs_uint32)vnovel_font_tint_rgb((unsigned int)color);
+}

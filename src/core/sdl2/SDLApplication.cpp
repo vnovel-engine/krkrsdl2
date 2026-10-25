@@ -43,6 +43,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <limits.h>   /* PATH_MAX, for the user-font path */
 #endif
 
 /* Portable sub-frame sleep, in milliseconds (may be fractional). nanosleep
@@ -4043,6 +4044,13 @@ TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state)
 extern void TVPAddSystemFontToFreeType(const std::string& storage, std::vector<tjs_string>* faces);
 extern bool TVPAddFaceAliasToFreeType(const tjs_string& target, const tjs_string& alias);
 
+#ifdef __LIBRETRO__
+/* The bridge's face lookup (see src/engine_bridge.h). C linkage, declared here
+ * because a linkage specification cannot appear inside a function. */
+extern "C" int vnovel_font_selected_path(char *out, int out_size,
+                                         const char **name);
+#endif
+
 /* Windows face names KiriKiri/KAG games request, mapped onto the bundled Mona
  * font. Mona is a metric-compatible MS PGothic clone (Shinonome-derived,
  * effectively public domain — see resources/fonts/MONA-LICENSE.txt), so it is
@@ -4100,12 +4108,75 @@ static void TVPLoadBundledFont() {
 
 static bool krkr_system_fonts_loaded = false;
 
+/* Register the user-selected face (core option `vnovel_font_face`), if the core
+ * selected one. The face is a file in this engine's data directory, deployed
+ * beside overrides.txt (see tools/deploy-engine-data.sh and vnovel_font_dir in
+ * engine_bridge.h), so it is resolved the same way the bundled Mona is.
+ *
+ * Registered as a SYSTEM font, which is what the lookup's fallback branch
+ * consults, and then EVERY Windows face name is aliased onto it — the same
+ * trick TVPLoadBundledFont uses for Mona. That is what makes the option work on
+ * this engine: KAG asks for a face by name ("ＭＳ ゴシック", "MS Gothic", …),
+ * never for "the user's font", so the chosen face has to answer those names or
+ * the game's own font wins. It therefore takes precedence over the bundled
+ * Mona, which is registered later in TVPLoadSystemFonts. */
+bool TVPRegisterUserFont()
+{
+#ifdef __LIBRETRO__
+	/* C linkage: the definition is in the bridge (engine_bridge.c, compiled as
+	 * C). The declaration is at file scope below, because a linkage
+	 * specification cannot appear in block scope. */
+	char path[PATH_MAX];
+	const char *name = NULL;
+
+	/* The bridge helper builds the path from the deployed face directory and
+	 * validates the choice; with no face selected, or no deployed directory, it
+	 * reports "none" and the engine's own font stands. */
+	if (!vnovel_font_selected_path(path, (int)sizeof(path), &name))
+		return false;
+
+	{
+		FILE *probe = fopen(path, "rb");
+		if (!probe) {
+			fprintf(stderr, "krkr fonts: user font '%s' is unreadable; using "
+			                "the engine's own font\n", path);
+			return false;
+		}
+		fclose(probe);
+	}
+
+	try {
+		std::vector<tjs_string> faces;
+		TVPAddSystemFontToFreeType(std::string(path), &faces);
+		if (faces.empty()) return false;
+		for (int a = 0; krkr_ms_alias_names[a]; a++) {
+			tjs_string alias;
+			TVPUtf8ToUtf16(alias, std::string(krkr_ms_alias_names[a]));
+			for (size_t f = 0; f < faces.size(); f++)
+				TVPAddFaceAliasToFreeType(faces[f], alias);
+		}
+		fprintf(stderr, "krkr fonts: user font '%s' registered (%zu face(s)), "
+		                "MS names aliased\n", path, faces.size());
+		return true;
+	} catch (...) {
+		fprintf(stderr, "krkr fonts: failed to register user font '%s'\n", path);
+		return false;
+	}
+#else
+	return false;
+#endif
+}
+
 /* Register every system font the host provides, then the bundled fallback.
  * Discovery lives in FontDiscovery.cpp (fontconfig on Linux/BSD, else a
  * portable directory walk); this function only feeds the results to FreeType. */
 static void TVPLoadSystemFonts() {
 	if (krkr_system_fonts_loaded) return;
 	krkr_system_fonts_loaded = true;
+	/* The user's chosen face first: it is registered under the same Windows face
+	 * names the bundled font uses, and the face lookup takes the first match, so
+	 * registering it before Mona is what makes the option take precedence. */
+	TVPRegisterUserFont();
 	TVPLoadBundledFont();
 
 	std::vector<std::string> files = TVPListFontFiles();

@@ -16,6 +16,18 @@ engine. `external/krkrz` and `external/FAudio` are forks in their own right;
 see their `LINEAGE.md`.
 
 
+## 2026-10-26 — user font selection, size and tint
+
+### Added
+
+- The core's font options reach the engine through the bridge: a face the user
+  chose is registered under the MS font names KAG resolves, `vnovel_font_size`
+  scales the height setters (layers and the default font), and
+  `vnovel_font_tint` is applied where text is blended. At the defaults nothing
+  changes.
+- The engine no longer reads the core's option keys itself; it asks the bridge,
+  so a standalone engine build still compiles and behaves as before.
+
 ## 2026-10-25 — one debug word, and the Windows build
 
 ### Diagnostics

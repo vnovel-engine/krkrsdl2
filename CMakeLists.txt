@@ -54,7 +54,20 @@ option(KRKRSDL2_BUILD_ENABLE_WARNINGS "Enable warnings when building the project
 # needs (extern "C" control entry points, ring-buffer audio, dummy video).
 option(KRKRSDL2_LIBRETRO "Build as a libretro core engine module" OFF)
 if(KRKRSDL2_LIBRETRO)
-add_compile_definitions(KRKRSDL2_LIBRETRO)
+# Two names, one meaning, and the split is deliberate:
+#
+#   KRKRSDL2_LIBRETRO  the CMake OPTION, and the marker the engine's existing
+#                      sources test. Kept because the option is passed by name
+#                      from outside (-DKRKRSDL2_LIBRETRO=ON, in the Makefile and
+#                      in buildroot), so renaming it would churn every build
+#                      recipe for no behavioural gain.
+#   __LIBRETRO__       the C marker this whole tree shares. Defined here so the
+#                      engine's code can test ONE name for "we are inside the
+#                      vnovel core" — the same one the core, the two ONScripter
+#                      engines and the sdl-libretro glue already use — instead
+#                      of inventing a second vocabulary for the same fact. New
+#                      code should test __LIBRETRO__.
+add_compile_definitions(KRKRSDL2_LIBRETRO __LIBRETRO__)
 endif()
 
 # Compiled-in plugin shims (src/core/base/sdl2/BuiltinShims.h). ON lets
