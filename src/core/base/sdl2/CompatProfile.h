@@ -18,13 +18,12 @@
 	per-game mask from, which is then tested against that game.
 
 	The switches, with the change each reverts to its old behaviour:
-
-	  classvar        <= 2007-01-20 (2640d44a) : class-scope `var` uses SPDE
+	  classvar        <= 2007-01-20 : class-scope `var` uses SPDE
 	  evalcontext     <= 2.21 beta 9           : post-! evaluates on global
 	  holdalpha       <= 2.23 beta 5           : Layer.holdAlpha defaults true
 	  unaryaster      <= 2.25 beta 1           : unary '*' ignores property access
 	  composite219    <= 2006-10               : pre-2006 layer compositing algorithm
-	  structconst     <= 2008-04-08 (1b412b94) : saveStruct writes "%[" (no "(const)")
+	  structconst     <= 2008-04-08 : saveStruct writes "%[" (no "(const)")
 	  structcrlf      <= (Windows builds)      : saveStruct writes CRLF, not LF
 
 	The two save-format switches are a *wire format*, not a behaviour, and they
@@ -32,16 +31,15 @@
 	drawing or script semantics — a save one era writes, the other must be able
 	to read.
 
-	`structconst`: commit 1b412b94 (2008-04-08, W.Dee) made Array.saveStruct and
-	Dictionary.saveStruct emit `(const) %[` instead of `%[`. Measured against
-	the real thing: Fate/stay night's engine is 2.19.15.783 (2003-09-21), and
-	its scripts eval a save with Scripts.evalStorage. Feeding it a save written
-	with `(const) %[` makes that eval THROW ("the data or its backup is
-	corrupt"), so a 2.19-era title cannot load a modern save at all — it is not
-	a cosmetic difference. Our engine vendors krkrz, which carries the 2008+
-	line, so without this switch every save we write is unreadable by the game
-	that motivated the port. Format: see tTJSDictionaryNI::SaveStructuredData
-	and tTJSArrayNI::SaveStructuredData.
+	`structconst`: the 2008 line made Array.saveStruct and Dictionary.saveStruct
+	emit `(const) %[` instead of `%[`. Measured against the real thing: Fate/stay
+	night's engine is 2.19.15.783, and its scripts eval a save with
+	Scripts.evalStorage. Feeding it a save written with `(const) %[` makes that
+	eval THROW ("the data or its backup is corrupt"), so a 2.19-era title cannot
+	load a modern save at all — it is not a cosmetic difference. Our engine
+	vendors krkrz, which carries the 2008+ line, so without this switch every
+	save we write is unreadable by the game that motivated the port. Format: see
+	tTJSDictionaryNI::SaveStructuredData and tTJSArrayNI::SaveStructuredData.
 
 	`structcrlf`: the `(const)` change was hard-coded behind TJS_TEXT_OUT_CRLF,
 	a *build* define — so the same engine emits LF on a Unix build and CRLF on a

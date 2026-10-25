@@ -7,45 +7,14 @@
 */
 //---------------------------------------------------------------------------
 // "MenuItem" class implementation - SDL2 / libretro platform half
-//---------------------------------------------------------------------------
-// Upstream supplied this half twice, both times as the platform directory's own
-// MenuItemImpl.{h,cpp} - the class tTJSNI_MenuItem that MenuItemIntf.h pulls in
-// through its `#include "MenuItemImpl.h"`:
 //
-//     visual/win32/MenuItemImpl.{h,cpp}     the VCL one: a TMenuItem on the
-//                                           window's TMainMenu, TrackPopupMenuEx
-//
-// This tree's platform is SDL2 (see src/config/src_list/kirikirisdl2/
-// includes.txt: src/core/visual/sdl2 is the include directory WindowImpl.h -
-// and now MenuItemImpl.h - resolve from), so this file is the analogue for it,
-// and it lives beside the window implementation it belongs to:
-//
-//     src/core/visual/sdl2/MenuItemImpl.{h,cpp}
-//
-// WHAT IS INERT, AND WHY (nothing here pretends to render)
-// --------------------------------------------------------
-// There is no window menu in this target: a libretro core owns no window
-// chrome, has no menu bar, and no HWND to hang one on. The vendored NP2kai menu
-// (deps/np2kai-menu, driven by the core's src/menu.cpp) is the native menu that
-// exists, and it cannot be bound from here:
-//
-//   * Its item tree is built once, by menusys_create(), from a static MSYSITEM
-//     array; there is no runtime append/insert/remove for a menu (menudlg_append
-//     belongs to the modal *dialog* API, a different singleton). So Add/Insert/
-//     Remove cannot be expressed against it at all - which is why those three
-//     maintain the inherited item tree instead, and say so below.
-//   * menusys_* is compiled into the *core* (Makefile.common's NP2KAI_MENU
-//     block), not into this engine archive, and the menu is only presented while
-//     the core's own open flag is set (vnovel_menu_open keeps it). Materialising
-//     this tree into it therefore needs a core-side entry point that does not
-//     exist yet; calling the vendored API directly from here would instead
-//     duplicate the core's menu session state (its VRAM, geometry and open flag)
-//     and put the two out of step.
-//
-// So: item state and the item tree are real and are exactly what the game reads
-// and writes; popup() is a documented no-op; and there is no menu bar for
-// `visible` to hide. Each is marked at its definition.
-//---------------------------------------------------------------------------
+// This target has no window chrome, no menu bar, and no HWND. The vendored
+// NP2kai menu (deps/np2kai-menu) is built from a static array at open time and
+// has no runtime append/insert/remove surface for a menu, so Add/Insert/Remove
+// cannot be expressed against it and maintain the inherited item tree here.
+// popup() is a no-op (returns 0, upstream's value for "the popup did not come
+// up"); visible has no bar to hide but the item-level value is kept so scripts
+// that set it read it back.
 #ifndef MenuItemImplH
 #define MenuItemImplH
 
@@ -58,13 +27,9 @@ class tTJSNI_MenuItem : public tTJSNI_BaseMenuItem
 {
 	typedef tTJSNI_BaseMenuItem inherited;
 
-	/* Item state. Upstream kept this in the VCL TMenuItem it owned and mirrored
-	 * it through the property accessors (Caption, Checked, Enabled, GroupIndex,
-	 * RadioItem, ShortCut, Visible, MenuIndex); with no such object here the
-	 * state lives in this instance and the accessors are the only way in. What
-	 * the game observes is therefore identical; what upstream additionally did
-	 * with it (paint it, gray it out, reorder it, bind an accelerator) has
-	 * nothing to act on. */
+	/* Item state, stored here because this target has no platform menu object.
+	 * The accessors are the only way in; the game observes the same values
+	 * upstream mirrored through its VCL TMenuItem. */
 	ttstr Caption;
 	ttstr Shortcut;
 	bool Checked;

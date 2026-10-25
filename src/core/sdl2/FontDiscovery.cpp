@@ -1,12 +1,6 @@
 //---------------------------------------------------------------------------
 // FontDiscovery.cpp — where the engine's font files come from.
 //
-// Historically the engine found fonts by shelling out to `find` over a list of
-// hardcoded Linux paths, then registered every file it saw by face name. That
-// neither worked off Linux nor resolved the Windows face names KiriKiri games
-// ask for (MS Gothic and friends): discovery was a directory listing and
-// matching was exact-name only.
-//
 // This module owns discovery only; matching/aliasing stays in FreeType.cpp
 // where the face lists live. Two backends:
 //
@@ -19,7 +13,6 @@
 //   * directory scan — a portable walker (dirent / Win32) over an ordered,
 //     overridable list of directories. Used on hosts without fontconfig, and
 //     whenever KRKRSDL2_FONT_PATH selects an explicit list.
-//---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "FontDiscovery.h"
 

@@ -9,38 +9,18 @@
 /* The presentation seam - host-facing contract.
  *
  * The engine composites layers into a bitmap and then has to get that bitmap
- * onto the screen. On Windows that was DirectDraw; here it is whatever the host
- * provides. This header is the whole of what a host has to know, and it is
- * written in plain C: no engine headers, no host headers, no SDL, no rect
- * class. A host includes this file and nothing else from the engine.
+ * onto the screen. This header is the whole of what a host has to know, in
+ * plain C: no engine headers, no host headers, no SDL, no rect class. A host
+ * includes this file and nothing else from the engine.
  *
- * Why a new seam rather than the existing one
- * -------------------------------------------
- * The previous arrangement passed an SDL_Surface* across the boundary and had
- * the libretro core read that struct through hardcoded byte offsets. Three
- * problems followed from that:
+ * The seam is a plain description of a pixel buffer plus callbacks. The host
+ * owns the destination; the engine only says what it produced. The same seam
+ * serves the SDL window build, the libretro core, and a batch test that just
+ * writes PNGs.
  *
- *   - SDL's struct layout became part of our ABI. A different SDL build, or a
- *     different platform's padding, silently reinterprets width as height.
- *   - The core had to force SDL_VIDEODRIVER=dummy so that a surface existed at
- *     all, which meant the engine rendered into a dummy-driver window and the
- *     core scraped the result back out of it.
- *   - The upload was a partial SDL_UpdateTexture of a dirty sub-rectangle.
- *     Measured, forcing a full upload recovers some but not all of the missing
- *     content, so this path contributed to the loss rather than accounting for
- *     all of it.
- *
- * The replacement is a plain description of a pixel buffer plus callbacks. The
- * host owns the destination; the engine only says what it produced. The same
- * seam serves the SDL window build, the libretro core, and a batch test that
- * just writes PNGs.
- *
- * Threading
- * ---------
- * The present callback is invoked from the engine's own thread, at the end of a
- * composite. The buffer's pixel pointer stays valid only until the callback
- * returns; a host that needs the pixels later must copy them, not retain the
- * pointer.
+ * Threading: the present callback is invoked from the engine's own thread, at
+ * the end of a composite. The buffer's pixel pointer stays valid only until the
+ * callback returns; a host that needs the pixels later must copy them.
  */
 /*---------------------------------------------------------------------------*/
 
@@ -62,10 +42,7 @@ extern "C" {
  * SDL_PIXELFORMAT_ARGB8888 looks like as bytes on a little-endian machine, so
  * both sides can use it without a conversion pass.
  *
- * Stated here rather than left implicit: the previous seam's format was
- * whatever SDL's surface happened to be and the core had to assume. A host that
- * wants another layout converts inside its own callback, where it can see both
- * sides.
+ * A host that wants another layout converts inside its own callback.
  */
 /*---------------------------------------------------------------------------*/
 
@@ -192,8 +169,7 @@ typedef struct tTVPTextPlane
 	 * before it live at LOWER addresses. A host must therefore step rows by the
 	 * signed pitch, never copy `|Pitch| * Height` bytes forward from `Pixels`:
 	 * for a 808x48 plane that reads ~155 KB forward from a pointer that is
-	 * already at the end of a 152 KB allocation. (This is exactly the bug the
-	 * core's own copy had, found with a core dump inside memcpy.)
+	 * already at the end of a 152 KB allocation.
 	 *
 	 * So: for row y, the bytes are `(const unsigned char *)Pixels + y * Pitch`.
 	 *

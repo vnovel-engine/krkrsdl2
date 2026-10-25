@@ -1,102 +1,60 @@
 //---------------------------------------------------------------------------
 // shims/firespark.cpp — Fate/stay night's `firespark.dll`, replaced.
 //
-// What the plugin was
-// -------------------
-// `firespark.dll` is NOT stock KiriKiri: it is absent from the upstream tree
-// (no entry in bin/win32/plugin or src/plugins/win32) and ships with Fate. It
-// registers four global TJS functions and draws a time- and RNG-driven particle
-// "fire spark" directly into a Layer's own pixel buffer, the same
-// mainImageBuffer* mechanism drawer.dll uses.
+// Not stock KiriKiri (absent from the upstream tree); ships with Fate.
+// Registers four global TJS functions and draws a time- and RNG-driven particle
+// "fire spark" directly into a Layer's own pixel buffer (same
+// mainImageBuffer* mechanism drawer.cpp uses).
 //
-// Recovered from the binary
-// -------------------------
-// The port below is reconstructed from the shipped DLL, not from source. Where
-// a line's behaviour is taken straight from the disassembly or from Ghidra's
-// decompilation of a named function, the comment names the address, e.g.
+// Reconstructed from the shipped DLL (not from source). Where a line's
+// behaviour is taken from the disassembly, the comment names the address, e.g.
 // "(0x100017d1, FUN_100014c0)" — FUN_100014c0/10001f50/10002de0/10002e20 are
-// drawFireSpark / initFireSpark / finishFireSpark / changeFireSpark, which
-// Ghidra had left undefined because they are only reached through the global
-// dispatch's member table; they were recovered by force-disassembling the
-// region 0x100014c0..0x10003300.
+// drawFireSpark / initFireSpark / finishFireSpark / changeFireSpark.
 //
-// Note the original's own argument order, which the export notes describe more
-// loosely than the code does:
-//
-//     initFireSpark(layer, options)     <- two arguments (0x10001fce, 0x10001ff1)
-//     changeFireSpark(options)          <- one, re-reads options.layer (0x10002e80)
-//     drawFireSpark([clock])            <- optional object with a .tick member
-//     finishFireSpark()                 <- no arguments
+// The original's argument order:
+//     initFireSpark(layer, options)     two arguments (0x10001fce, 0x10001ff1)
+//     changeFireSpark(options)          one, re-reads options.layer (0x10002e80)
+//     drawFireSpark([clock])            optional object with a .tick member
+//     finishFireSpark()                 no arguments
 //
 // One source, two consumers: see shim_abi.h. Built into the engine the four
-// names are reached through the override table's `@builtin:firespark`; built as
-// a PE it is the plugin the game links.
+// names are reached through `@builtin:firespark`; built as a PE it is the
+// plugin the game links.
 //
-// State contract (BuiltinShims.h)
-// -------------------------------
-// Everything the effect owns is in this translation unit and is allocated by
-// link()/initFireSpark and released by unlink()/finishFireSpark. No engine
-// global is assigned. What is registered with the engine is unregistered by
-// V2Unlink, through the engine's own helpers.
+// State contract (BuiltinShims.h): everything the effect owns is in this
+// translation unit, allocated by initFireSpark and released by
+// finishFireSpark. No engine global is assigned. What is registered is
+// unregistered by V2Unlink.
 //
-// Pixel-surface contract
-// ----------------------
-// The surface is the Layer's own buffer, reached through the Layer's TJS
-// properties exactly as the original did (`mainImageBufferForWrite`,
-// `mainImageBufferPitch`, `imageWidth`, `imageHeight`). Nothing here crosses a
-// host boundary, so no host callback is involved. The assumptions, stated once:
-//
-//   * the buffer holds 32bpp ARGB words, i.e. 0x00RRGGBB as a little-endian
-//     word (bytes B,G,R,A in memory). The original packs its palette exactly
-//     that way (0x10002c2d: bits 16-23 from table[+0], 8-15 from table[+1],
-//     0-7 from table[+2]);
-//   * rows are addressed by a BYTE pitch — `mainImageBufferPitch` maps to
-//     Layer::GetPitchBytes() (visual/LayerIntf.cpp:2688), so the accessor's
-//     "Pixel" in the name is misleading. Rows are padded; never assume
-//     width * 4, and never index by a word stride.
+// Pixel-surface contract (see drawer.cpp for the full derivation):
+//   * 32bpp ARGB: one little-endian word a pixel (bytes B,G,R,A). The original
+//     packs its palette that way (0x10002c2d).
+//   * rows are addressed by a BYTE pitch — mainImageBufferPitch maps to
+//     Layer::GetPitchBytes() (visual/LayerIntf.cpp:2688). Rows are padded.
 //
 // Every write is clipped to the layer rectangle, so a hostile option value can
 // only produce an empty or offset effect, never an out-of-bounds store.
-//---------------------------------------------------------------------------
 
-// The shim's registry name. shim_abi.h turns this into the per-shim entry point
-// symbols when built into the engine; see that header for why.
+// Registry name (see shim_abi.h).
 #define SHIM_NAME firespark
 #include "shim_abi.h"
 
 #include "tp_stub.h"
 
-// TVPGetRandomBits128 (utils/Random.h) and TVPGetTickCount (utils/TickCount.h)
-// are the two engine functions the original resolved through the exporter; the
-// effect is time- and RNG-driven, so the same sources keep it comparable.
-// TickCount.h comes in through tp_stub.h; Random.h is not part of that set.
+// TVPGetRandomBits128 and TVPGetTickCount are the engine functions the effect
+// is time- and RNG-driven by. TickCount.h comes through tp_stub.h; Random.h
+// does not.
 #include "Random.h"
 
 #include <cmath>
 #include <cstring>
 #include <new>
 
-//---------------------------------------------------------------------------
-// Exported-name check
-//
-// The shim depends on engine functions that a standalone PE plugin resolves
-// through V2Link's exporter. TP_stub's integrated-plugin build gives them as
-// direct symbols, and the same two are in the engine's plugin export table, so
-// a plugin built from this source finds them the ordinary way:
-//
-//   TVPGetTickCount      crkrz/utils/TickCount.h,   engine export (FuncStubs.cpp:1552)
-//   TVPGetRandomBits128  crkrz/utils/Random.h,      engine export (FuncStubs.cpp:1534)
-//
-// Both are __cdecl and take no engine type the caller must construct, so the
-// dependency is the same on both paths.
-//---------------------------------------------------------------------------
 
 namespace {
 
 //---------------------------------------------------------------------------
-// TJS error codes used below. Values taken from tjsErrorDefs.h; named here only
-// so the returns read as what the original returned (0xfffffc17 / 0xfffffc14).
-//---------------------------------------------------------------------------
+// TJS error codes (values from tjsErrorDefs.h).
 const tjs_error kESucceed = TJS_S_OK;         // 0
 const tjs_error kEBadParamCount = -1004;      // TJS_E_BADPARAMCOUNT  (0xfffffc14)
 const tjs_error kEMemberNotFound = -1001;     // TJS_E_MEMBERNOTFOUND (0xfffffc17)
@@ -576,31 +534,17 @@ bool BindLayer(Effect &e, iTJSDispatch2 *layer)
 	}
 	e.pitch = (tjs_int)(tTVInteger)val;
 
-	// The reported pitch KEEPS ITS SIGN, because its sign is the row direction
-	// and not a detail to normalise away.
-	//
-	// This previously rebased the pointer to the bitmap's low end and flipped
-	// the sign, so that "index downward" was true by construction. That is a
-	// vertical MIRROR of the right addresses, and it is measurable: the engine
-	// puts image row y at
-	//     (Height - y - 1) * PitchBytes + Bits    (tTVPBitmap::GetScanLine,
-	//                                              LayerBitmapImpl.cpp:528)
-	// so from GetScanLine(0) - which is what this buffer pointer is - row y is
-	// at base + pitch*y with the pitch as reported (-3200 for an 800x600
-	// Layer). Rebase-then-flip yields Bits + |pitch|*y, i.e. row (Height-1-y).
-	// The same hazard was found and fixed the same way in shims/drawer.cpp,
-	// where a probe Layer proved it: keeping the sign renders at the row asked
-	// for, and getting it wrong is silent.
-	//
-	// Nothing else changes: FillRect already steps the row pointer by the byte
-	// pitch, so it needs only a signed stride.
+	// The reported pitch keeps its sign: image row y lives at base + pitch*y
+	// with the pitch as reported (-3200 for an 800x600 Layer). Rebasing the
+	// pointer and flipping the sign is a vertical mirror of the right addresses
+	// and is silent (the call returns success and draws to the wrong row). The
+	// same hazard exists in drawer.cpp. FillRect steps the row pointer by the
+	// byte pitch, so it needs only a signed stride.
 
-	// The clear colour is the layer's own first pixel (0x10001f.. in init:
-	// DAT_10012eb4 = *DAT_10012a48). Erasing with what is already there is how
-	// the original avoided inventing an alpha: the palette is written with a
-	// zero alpha byte, so the erased area must be restored to a known state.
-	/* Row 0 of the image is exactly this pointer once the stride keeps its sign,
-	 * so the sample no longer depends on the sign being positive. */
+	// Clear colour is the layer's own first pixel (0x10001f.. in init). The
+	// palette is written with a zero alpha byte, so erased areas must be
+	// restored to a known state. Row 0 is this pointer once the stride keeps
+	// its sign.
 	e.clearColor = (e.pixels && e.pitch != 0 && e.width > 0 && e.height > 0) ? e.pixels[0] : 0;
 
 	if (e.layer != layer)
@@ -689,11 +633,9 @@ bool RefreshLayer(Effect &e)
 	if (TJS_FAILED(e.layer->PropGet(0, k.mainImageBufferPitch.c_str(), k.mainImageBufferPitch.GetHint(), &val, e.layer))) return false;
 	const tjs_int newPitch = (tjs_int)(tTVInteger)val;
 
-	/* Same convention as BindLayer: the pitch keeps its sign, because the sign
-	 * IS the row direction. This used to rebase the pointer and negate the
-	 * stride, which mirrored the surface and - because that made the pointer
-	 * differ on every call - re-sampled clearColor from the wrong address each
-	 * frame. One rule, stated once, applied in both places. */
+	/* Same convention as BindLayer: the pitch keeps its sign (the sign IS the
+	 * row direction). Rebasing the pointer and negating the stride mirrors the
+	 * surface and re-samples clearColor from the wrong address each frame. */
 	if (newPixels != e.pixels || newPitch != e.pitch)
 		e.clearColor = (newPixels && newPitch != 0 && e.width > 0 && e.height > 0) ? newPixels[0] : 0;
 
@@ -1263,19 +1205,10 @@ void ReadOptions(Options &o, iTJSDispatch2 *dict)
 } // namespace
 
 //---------------------------------------------------------------------------
-// V2Link / V2Unlink — the plugin ABI (shim_abi.h).
-//
-// The four names are registered through the engine's own helpers, which take
-// and drop the global dispatch reference correctly; unregistration uses the
-// matching remover, so the pair is symmetric and the engine may link, unlink and
-// link another shim in one run.
-//
-// extern "C" is stated explicitly. shim_abi.h renames the entry points per shim
-// only in the built-in build, and in that build SHIM_EXPORT is empty, so without
-// this the symbols would be C++-mangled and would not match BuiltinShims.cpp's
-// `extern "C" int shim_firespark_V2Link(...)`. On the plugin path SHIM_EXPORT
-// already carries extern "C"; nesting is legal and redundant.
-//---------------------------------------------------------------------------
+// V2Link / V2Unlink — the plugin ABI (shim_abi.h). Registration is symmetric.
+// extern "C" is stated explicitly: in the built-in build SHIM_EXPORT is empty,
+// so without it the symbols would be C++-mangled and would not match
+// BuiltinShims.cpp's `extern "C" int shim_firespark_V2Link(...)`.
 extern "C" {
 
 SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)
@@ -1324,8 +1257,7 @@ SHIM_EXPORT SHIM_HIDDEN int V2Unlink(void)
 	TVPRemoveGlobalObject(k.drawFireSpark.c_str());
 
 	// Anything still live goes with the shim: the engine may unload a plugin
-	// without the game having called finishFireSpark (the original's V2Unlink
-	// released the particle array the same way, at 0x10003399).
+	// without finishFireSpark having been called (0x10003399).
 	g_effect.Release();
 	return SHIM_TJS_S_OK;
 }

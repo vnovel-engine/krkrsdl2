@@ -1,13 +1,9 @@
 //---------------------------------------------------------------------------
 // shims/filter.cpp — Fate/stay night's `filter.dll`, replaced.
 //
-// What the plugin was
-// -------------------
-// `filter.dll` is NOT stock KiriKiri: it is absent from the upstream tree (no
-// entry in bin/win32/plugin, no source under src/plugins) and ships with Fate.
-// It registers twelve global TJS functions and runs them as per-pixel passes
-// over a Layer's own bitmap, plus one wrapper that delegates to the engine's
-// own stretch blitter:
+// Not stock KiriKiri (absent from the upstream tree); ships with Fate.
+// Registers twelve global TJS functions run as per-pixel passes over a Layer's
+// own bitmap, plus one wrapper that delegates to the engine's stretch blitter:
 //
 //     Stretch(%[src,dest,dleft,dtop,dwidth,dheight,
 //              sleft,stop,swidth,sheight,opa,type])
@@ -15,8 +11,7 @@
 //     Contrast(%[layer, level])
 //         — per-pixel contrast via a 256-entry LUT built from `level`.
 //     Noise(%[layer, monocro, seed, under, upper])
-//         — fill the layer with an LCG noise field, optionally banded and
-//           optionally monochrome.
+//         — fill the layer with an LCG noise field, optionally banded/monochrome.
 //     Blur(%[layer, level])     — 3x3 blur applied `level` times.
 //     Smudge(%[layer, level])   — as Blur: the DLL's 3x3 kernel at 0x10001000
 //                                 has exactly two call sites, 0x100034f0 in
@@ -37,7 +32,6 @@
 //                                  the layer after writing).
 //
 // LIMITATIONS (each verified against the DLL, not assumed)
-// ------------------------------------------------------
 // initHaze implements `waves`, `speed`, `cycle`, the three row boundaries
 // (upper/center/lower) and their three powers. The DLL's InitHaze reads
 // thirteen keys (pushes at 0x10004cc2-0x10005163, in order): time, intime,
@@ -47,95 +41,57 @@
 // which never reach the wave table; and lwaves, the second wave set, whose
 // read at 0x10005149 has no consumer in the displacement.
 //
-// The pixel filters reach the Layer through its own standard TJS properties
-// (`imageWidth`, `imageHeight`, `mainImageBufferForWrite`,
-// `mainImageBufferPitch`) — the same surface `drawer.dll`, `firespark.dll`,
-// `clipboardEx`, `tftSave`, `shrinkCopy` and others use — so every pass
-// happens inside the engine and no host boundary is crossed. V2Unlink removes
-// the twelve names again.
-//
 // One source, two consumers: see shim_abi.h. Built into the engine the names
-// are reached through the override table's `@builtin:filter`; built as a PE it
-// is the plugin the game links.
+// are reached through `@builtin:filter`; built as a PE it is the plugin the
+// game links.
 //
-// Recovered from the binary
-// -------------------------
-// The port is reconstructed from the shipped DLL, not from source. Functions
-// named below are Ghidra's, matched to addresses; every non-obvious line says
-// which one it comes from and what the arithmetic means.
+// Reconstructed from the shipped DLL (not from source). Ghidra function names
+// and addresses are cited where a non-obvious line derives from one:
 //
-//   FUN_10001a70  read the Layer's surface: imageWidth / imageHeight /
-//                 mainImageBufferForWrite / mainImageBufferPitch, through
-//                 iTJSDispatch2::PropGet, raising
-//                 "invoking of Layer.<member> failed." when one is absent.
-//   FUN_10001000  one pass of a 3x3 box blur over the surface (in place,
-//                 with a one-row scratch border). Used by both Blur and
-//                 Smudge.
-//   FUN_10001ca0  InitLens: allocate and fill a 0x2000-entry fixed-point tan
-//                 table.
+//   FUN_10001a70  read the Layer surface through PropGet
+//   FUN_10001000  one pass of a 3x3 box blur (in place, one-row scratch border).
+//                 Used by both Blur and Smudge.
+//   FUN_10001ca0  InitLens: allocate and fill a 0x2000-entry fixed-point tan table.
 //   FUN_10001d00  ReleaseLens: free the tan table.
-//   FUN_10001d10  Lens: magnify a circular region, sampling the source with
-//                 bilinear weights derived from the tan table.
-//   FUN_100025e0  initHaze: parse the wave spec and build a 16384-entry
-//                 displacement table as a cosine sum.
+//   FUN_10001d10  Lens: magnify a circular region via bilinear resampling.
+//   FUN_100025e0  initHaze: build a 16384-entry displacement table as a cosine sum.
 //   FUN_100027a0  doHaze blend row: 50/50 average of dest and a displaced src.
 //   FUN_100029a0  doHaze copy row: straight copy of a displaced src row.
 //   FUN_10003ec0  Noise: fill the layer with an LCG noise field.
 //   FUN_100047d0  Contrast: build a 256-entry LUT and remap every channel.
-//   FUN_100051d0  doHaze: displace rows of src by the wave table and write
-//                 them onto dest, blending or copying per the `blend` flag.
+//   FUN_100051d0  doHaze: displace rows of src by the wave table, blend or copy.
 //
-// Pixel-surface contract
-// ----------------------
-// The surface is the Layer's own buffer, reached through the Layer's TJS
-// properties exactly as the original did. Nothing here crosses a host
-// boundary, so no host callback is involved. The assumptions, stated once, in
-// the style of `drawer.cpp` and `firespark.cpp`:
-//
-//   * the buffer is 32bpp ARGB: one little-endian word a pixel, bytes B,G,R,A,
-//     so 0x00RRGGBB with the alpha in bits 24-31. The engine's own
-//     `GrayToColorFunctor` (visual/LayerBitmapIntf.h) packs 0xff000000 |
-//     r<<16 | g<<8 | b the same way;
-//   * rows are addressed by a BYTE pitch. `mainImageBufferPitch` maps to
-//     Layer::GetMainImagePixelBufferPitch() -> GetPitchBytes()
-//     (visual/LayerIntf.cpp:2688), so the "Pixel" in the accessor name is
-//     misleading. Rows are padded: never assume width * 4, and never index by
-//     a word stride;
-//   * that pitch is SIGNED and reports a bottom-up bitmap, so `base` is the
-//     low end of the pixel data and the stride to the next visual row is its
-//     magnitude (see drawer.cpp's Surface for the full derivation). The sign
-//     is kept: row y lives at base + y * pitch with the pitch as reported.
-//---------------------------------------------------------------------------
+// Pixel-surface contract (see drawer.cpp for the full derivation):
+//   * 32bpp ARGB: one little-endian word a pixel (bytes B,G,R,A), 0x00RRGGBB
+//     with alpha in bits 24-31. The engine's GrayToColorFunctor packs
+//     0xff000000 | r<<16 | g<<8 | b the same way.
+//   * rows are addressed by a BYTE pitch. mainImageBufferPitch maps to
+//     Layer::GetPitchBytes() (visual/LayerIntf.cpp:2688). Rows are padded.
+//   * that pitch is SIGNED and reports a bottom-up bitmap. Row y lives at
+//     base + y * pitch with the pitch as reported.
 
-// The shim's registry name. shim_abi.h turns this into the per-shim entry
-// point symbols when built into the engine; see that header for why.
+// Registry name (see shim_abi.h).
 #define SHIM_NAME filter
 #include "shim_abi.h"
 
 #include "tp_stub.h"
 
-// tTJSNC_Layer, tTJSNI_BaseLayer, OperateStretch, GetMainImage and the
-// TVPGetObjectFrom_NI_BaseLayer round trip in this file all come from here; the
-// TJS-property surface drawer.cpp uses instead is not enough for a filter, which
-// has to hand the engine a real Layer to blit between.
+// A filter has to hand the engine a real Layer to blit between, so the
+// TJS-property surface drawer.cpp uses is not enough.
 #include "LayerIntf.h"
 
 #include <new>
 #include <cmath>
 #include <cstring>
 
-// TVPGetRandomBits128 (utils/Random.h) is the engine RNG the Noise pass uses
-// when no explicit seed is given; it comes in through tp_stub.h.
+// TVPGetRandomBits128 is the engine RNG the Noise pass uses when no explicit
+// seed is given; it comes in through tp_stub.h.
 #include "Random.h"
 
 //---------------------------------------------------------------------------
-// The Layer surface, as fetched from the Layer (FUN_10001a70).
-//
-// Identical in contract to drawer.cpp's Surface and firespark.cpp's
-// BindLayer: base is the address of visual row 0, pitchBytes is the engine's
-// own SIGNED byte stride (the sign is the row direction, not a detail to
-// normalise away), and nothing else about the bitmap layout is assumed.
-//---------------------------------------------------------------------------
+// The Layer surface (FUN_10001a70). Same contract as drawer.cpp's Surface:
+// base is visual row 0, pitchBytes is the SIGNED byte stride (sign is the row
+// direction).
 namespace {
 
 struct Surface {
@@ -153,20 +109,13 @@ struct Surface {
 };
 
 //---------------------------------------------------------------------------
-// TJS error codes used below. Values from tjsErrorDefs.h, named here only so
-// the returns read as what the original returned.
-//---------------------------------------------------------------------------
+// TJS error codes (values from tjsErrorDefs.h).
 const tjs_error kESucceed = TJS_S_OK;      // 0
 const tjs_error kEBadParamCount = -1004;    // TJS_E_BADPARAMCOUNT (0xfffffc14)
 const tjs_error kEMemberNotFound = -1001;   // TJS_E_MEMBERNOTFOUND (0xfffffc17)
 
 //---------------------------------------------------------------------------
-// Property and function names.
-//
-// Constructed once for the process: a function-local static is initialised
-// exactly once even if TJS ever runs these from more than one thread, and the
-// strings would otherwise be rebuilt on every call.
-//---------------------------------------------------------------------------
+// Property and function names, constructed once (function-local static).
 struct Keys {
 	ttstr imageWidth, imageHeight, mainImageBufferForWrite, mainImageBufferPitch;
 	ttstr updateName;
@@ -251,15 +200,10 @@ inline Keys &K()
 
 //---------------------------------------------------------------------------
 // Fetch the surface through the Layer's own properties (FUN_10001a70).
-//
-// Returns false when the argument is not an object, when any of the four
-// properties is missing, when the buffer pointer is null, or when the
-// geometry is not usable. The original raised
-// "invoking of Layer.<member> failed." through TVPThrowExceptionMessage on a
-// missing member; here the shim declines to draw instead, so a script that
-// passes something that is not a Layer gets an undefined effect rather than a
-// thrown exception out of a rendering helper.
-//---------------------------------------------------------------------------
+// Returns false on a non-object, missing property, null buffer, or unusable
+// geometry. The original raised "invoking of Layer.<member> failed."; here the
+// shim declines to draw instead, so a non-Layer gets an undefined effect
+// rather than a thrown exception.
 bool BindSurface(Surface &s, iTJSDispatch2 *layer)
 {
 	if (!layer) return false;
@@ -1582,20 +1526,10 @@ tjs_error TJS_INTF_METHOD UpdateFunc(tTJSVariant *result, tjs_int numparams,
 } // namespace
 
 //---------------------------------------------------------------------------
-// V2Link / V2Unlink — the plugin ABI (shim_abi.h).
-//
-// The twelve names are registered through the engine's own helpers, which
-// take and drop the global dispatch reference correctly; unregistration uses
-// the matching remover, so the pair is symmetric and the engine may link,
-// unlink and link another shim in one run.
-//
-// extern "C" is stated explicitly. shim_abi.h renames the entry points per
-// shim only in the built-in build, and in that build SHIM_EXPORT is empty, so
-// without this the symbols would be C++-mangled and would not match
-// BuiltinShims.cpp's `extern "C" int shim_filter_V2Link(...)`. On the plugin
-// path SHIM_EXPORT already carries extern "C"; nesting is legal and
-// redundant.
-//---------------------------------------------------------------------------
+// V2Link / V2Unlink — the plugin ABI (shim_abi.h). Registration is symmetric.
+// extern "C" is stated explicitly: in the built-in build SHIM_EXPORT is empty,
+// so without it the symbols would be C++-mangled and would not match
+// BuiltinShims.cpp's `extern "C" int shim_filter_V2Link(...)`.
 extern "C" {
 
 SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)

@@ -1,34 +1,18 @@
 //---------------------------------------------------------------------------
 // shim_abi.h — the plugin ABI a shim presents, and how several can coexist.
 //
-// One source, two consumers
-// -------------------------
-// A shim file builds two ways from the same text, because it has to be
-// indistinguishable from the Windows plugin it replaces:
+// A shim builds two ways from the same text: as a standalone PE plugin
+// (`<name>.dll` / `.tpm`) the game links, or built into the core and reached
+// through the registry in BuiltinShims.cpp via the override table's
+// `@builtin:<name>` form. The ABI is not ours to choose: a plugin's loader
+// finds `V2Link`/`V2Unlink` by name, so those are the names in the standalone
+// build.
 //
-//   * standalone: compiled to a PE plugin (`<name>.dll` / `.tpm`) and dropped
-//     into the game directory, where the game's own TJS code links it exactly as
-//     it would the original. The engine is not involved.
-//   * built in: compiled into the core and reached through the registry in
-//     BuiltinShims.cpp via the override table's `@builtin:<name>` form, because
-//     a PE cannot be loaded where the core runs.
-//
-// The ABI below is therefore not ours to choose. A plugin's loader finds
-// `V2Link`/`V2Unlink` by name from outside, so those are the names in the
-// standalone build.
-//
-// Why the names are mangled when built in
-// ---------------------------------------
-// Built into one binary, several shims would each define `V2Link` — a duplicate
-// C symbol, and only the first would be reachable. So in that build each shim's
-// entry points are renamed to a per-shim symbol, selected by the `SHIM_NAME`
-// macro the shim defines before including this header. The registry declares
-// those same names.
-//
-// The rename is done by macro rather than by editing the functions, so a shim
-// keeps spelling its entry points `V2Link`/`V2Unlink`: the text you read is the
-// ABI, and only the linkage differs per build. That is the same reason the
-// export/hide decision lives here rather than in each file.
+// Built into one binary, several shims would each define `V2Link` — a
+// duplicate C symbol. So in that build each shim's entry points are renamed to
+// a per-shim symbol selected by the `SHIM_NAME` macro. The rename is by macro,
+// so a shim keeps spelling its entry points `V2Link`/`V2Unlink`; only the
+// linkage differs per build.
 //
 // Usage, at the top of a shim:
 //
@@ -36,10 +20,8 @@
 //     #include "shim_abi.h"
 //
 // and then define `SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *)`
-// and `... V2Unlink(void)` as usual.
-//
-// State contract: see BuiltinShims.h. A shim owns its state and nothing else.
-//---------------------------------------------------------------------------
+// and `... V2Unlink(void)` as usual. State contract: see BuiltinShims.h — a
+// shim owns its state and nothing else.
 #ifndef VNOVEL_SHIM_ABI_H
 #define VNOVEL_SHIM_ABI_H
 

@@ -1,15 +1,14 @@
 //---------------------------------------------------------------------------
 // shims/extrans.cpp — Fate/stay night's Extended Transition Plug-in, in-engine.
 //
-// extrans.dll exports V2Link/V2Unlink only (fate-decompiled/exports/extrans.dll.md
-// §1) and adds no TJS globals or classes. It registers transition handler
-// *providers* through TVPAddTransHandlerProvider and removes them through
+// extrans.dll exports V2Link/V2Unlink only and adds no TJS globals or classes.
+// It registers transition handler *providers* through
+// TVPAddTransHandlerProvider and removes them through
 // TVPRemoveTransHandlerProvider in V2Unlink. The decompiled V2Link (0x10001000)
 // stores the exporter, then makes five register calls; V2Unlink (0x10001030)
 // mirrors them.
 //
 // HANDLERS REGISTERED
-// -------------------
 // Seven names, though V2Link makes five register calls: the call to
 // RegisterRotateTransHandlerProvider (rotatetrans.cpp:487-493) constructs and
 // registers three providers. Upstream Main.cpp:32-36 is the call list.
@@ -23,41 +22,35 @@
 //   rotateswap    rotatetrans.cpp:318-475 + rotatebase.cpp
 //
 // The name each provider returns from GetName is the string the KAG `@trans`
-// tag resolves by `method=`. The shipped binary's .rdata carries all seven; the
-// addresses and their bytes are tabulated in EXTRANS-HANDLERS.md, which also
-// records that the decompilation's `)turn` spelling is a UTF-16LE alignment
-// artifact (the real literal begins at 0x10033638).
+// tag resolves by `method=`. The shipped binary's .rdata carries all seven;
+// the addresses and their bytes are tabulated in EXTRANS-HANDLERS.md, which
+// also records that the decompilation's `)turn` spelling is a UTF-16LE
+// alignment artifact (the real literal begins at 0x10033638).
 //
 // HOW A NAME RESOLVES
-// -------------------
-// KAGLayer.tjs:189-233 forwards `method` to Layer.beginTransition, which reaches
-// tTJSNI_BaseLayer::StartTransition, whose first action is
+// KAGLayer.tjs:189-233 forwards `method` to Layer.beginTransition, which
+// reaches tTJSNI_BaseLayer::StartTransition, whose first action is
 // TVPFindTransHandlerProvider(name) (LayerIntf.cpp:6781). The engine's own
 // registry holds crossfade/universal/scroll (TransIntf.cpp:1196-1213); a name
 // outside it throws TVPCannotFindTransHander ("Cannot find transition handler
-// %1", src/core/msg/sdl2/MsgLoad.cpp:162). Nothing in TJS catches it around the
-// trans path, so it reaches Conductor's timerCallback catch
+// %1", src/core/msg/sdl2/MsgLoad.cpp:162). Nothing in TJS catches it around
+// the trans path, so it reaches Conductor's timerCallback catch
 // (system/Conductor.tjs:163) and ends the scene at that tag.
 //
 // In the scenario corpus, mosaic and wave are requested statically: `@prick`/
 // `@prickT` (マクロ.ks:566-572) emit `@trans ... method=mosaic`, and `@wave`/
 // `@waveT` (マクロ.ks:927-939) emit `@transex * method=wave`. The other five
-// have no static call site in that corpus; `@trans` resolves them dynamically.
+// have no static call site; `@trans` resolves them dynamically.
 //
-// Two consumers (see shim_abi.h)
-// ------------------------------
-// One source text builds as a standalone Windows PE plugin *and* compiled into
-// the engine behind KRKRSDL2_BUILTIN_SHIMS. A shim may not include engine
-// headers: those exist on only one of those two paths. So everything this file
-// needs from the engine comes across the ABI — the transition interfaces below
-// are declared locally, and the pixel primitives are resolved by name through
-// the exporter, which is precisely what the original plugin did (its
-// tp_stub.cpp resolved every engine function through the same exporter, and
-// common.h/mosaic.cpp reached the pixel routines through that stub).
+// Two consumers (see shim_abi.h): one source text builds as a standalone PE
+// plugin and compiled into the engine behind KRKRSDL2_BUILTIN_SHIMS. A shim
+// may not include engine headers (they exist on only one path), so everything
+// this file needs from the engine comes across the ABI — the transition
+// interfaces are declared locally, and the pixel primitives are resolved by
+// name through the exporter, which is what the original plugin did.
 //
-// State contract (BuiltinShims.h): all state is file-static in this translation
-// unit, and everything V2Link registers, V2Unlink removes.
-//---------------------------------------------------------------------------
+// State contract (BuiltinShims.h): all state is file-static, and everything
+// V2Link registers, V2Unlink removes.
 
 #define SHIM_NAME extrans
 #include "shim_abi.h"
@@ -72,20 +65,27 @@
 // A shim cannot include tjsTypes.h (it must build on both paths), so the few
 // types that cross the boundary are restated here. They must match
 // external/krkrz/tjs2/tjsTypes.h exactly or the vtable this file builds will not
-// line up with the one the engine calls through.
+// line up with the one the engine calls through. No engine header is included
+// here to supply them, and the engine's precompiled header is off on Windows;
+// the set is kept whole so a shim sharing this block can use any of it.
+typedef int8_t tjs_int8;                       // tjsTypes.h:120/129
+typedef uint8_t tjs_uint8;                     // tjsTypes.h:121/130
+typedef int16_t tjs_int16;                     // tjsTypes.h:122/131
+typedef uint16_t tjs_uint16;                   // tjsTypes.h:123/132
 typedef int32_t tjs_int32;                     // tjsTypes.h:124/133
 typedef uint32_t tjs_uint32;                   // tjsTypes.h:125/134
 typedef int64_t tjs_int64;                     // tjsTypes.h:126/135
 typedef uint64_t tjs_uint64;
+typedef intptr_t tjs_intptr_t;                 // tjsTypes.h:157
+typedef uintptr_t tjs_uintptr_t;               // tjsTypes.h:158
 typedef int tjs_int;                           // tjsTypes.h:65/154
 typedef unsigned int tjs_uint;                 // tjsTypes.h:66/155
 typedef tjs_int32 tjs_error;                   // tjsTypes.h:303
 
-// tjs_char is 16-bit on every platform, but it is spelled two different ways:
-// MSVC's wchar_t, and (on GCC with a 32-bit wchar_t) char16_t. tjsTypes.h picks
-// between them on __WCHAR_MAX__ (tjsTypes.h:69-73, 141-148), and TJS_W follows
-// the same split (tjsTypes.h:100, 282-284). GetName hands a string of this type
-// to the engine, so the choice has to match the host build exactly.
+// tjs_char is 16-bit on every platform, spelled two ways: MSVC's wchar_t, and
+// (on GCC with a 32-bit wchar_t) char16_t. tjsTypes.h picks between them on
+// __WCHAR_MAX__; the choice must match the host build (GetName hands a string
+// of this type to the engine).
 #if defined(_WIN32) && !defined(__GNUC__)
 typedef wchar_t tjs_char;
 #  define SHIM_TJS_W(X) L##X
@@ -123,12 +123,10 @@ typedef wchar_t tjs_char;
 // byte-identical to upstream's src/core/visual/transhandler.h.
 
 // transhandler.h:195-217 — the rectangle/source/destination bundle handed to
-// iTVPDivisibleTransHandler::Process. All pixel access is by BYTE pitch: the
-// surfaces are `pitch` bytes per row and rows are padded, never `width * 4`.
-// The engine's own layer accessor is a trap here — it is *named*
-// GetMainImagePixelBufferPitch but returns byte pitch (LayerIntf.cpp:2688-2691
-// forwards to GetPitchBytes()) — so this file multiplies row indices by the
-// byte pitch everywhere and never assumes 4 bytes per pixel for addressing.
+// iTVPDivisibleTransHandler::Process. All pixel access is by BYTE pitch: rows
+// are padded, never `width * 4`. The engine's accessor is named
+// GetMainImagePixelBufferPitch but returns byte pitch (LayerIntf.cpp:2688-2691),
+// so this file multiplies row indices by the byte pitch everywhere.
 struct tTVPDivisibleData
 {
 	tjs_int Left;                          // processing rectangle left
@@ -178,20 +176,12 @@ public:
 	virtual tjs_error SHIM_INTF_METHOD GetAsString(const tjs_char *name,
 		const tjs_char **out) = 0;
 	// GetValue(const tjs_char *, tTJSVariant *) sits here in the real header
-	// (transhandler.h:132-134). It is deliberately omitted: reading it would
-	// require tTJSVariant, an engine class this file cannot see. Omitting the
-	// slot is safe *because the engine never calls a method on this interface
-	// through this declaration* — the object is built by the engine and this
-	// file only ever calls GetAsNumber, which is declared before the gap, so it
-	// keeps its correct index (transhandler.h:123-125). The two slots after the
-	// gap (Reserved2, GetDispatchObject) are declared for completeness and are
-	// never invoked here.
-	//
-	// GetAsNumber is the right accessor for these options: the engine's own
-	// built-in providers read time/vague/from/stay through it
-	// (TransIntf.cpp:528, 766-772, 1042-1053), and it reports an absent or void
-	// option as TJS_E_MEMBERNOTFOUND (TransIntf.cpp:57-70), which is exactly the
-	// "not specified" test the upstream modifiers rely on.
+	// (transhandler.h:132-134). Omitted because it requires tTJSVariant, which
+	// this file cannot see. Safe because the engine builds the object and this
+	// file only calls GetAsNumber (declared before the gap, so keeps its index).
+	// GetAsNumber is the right accessor: the engine's built-in providers read
+	// time/vague/from/stay through it (TransIntf.cpp:528, 766-772, 1042-1053),
+	// and it reports an absent option as TJS_E_MEMBERNOTFOUND (TransIntf.cpp:57-70).
 	virtual tjs_error SHIM_INTF_METHOD Reserved2() = 0;
 	virtual tjs_error SHIM_INTF_METHOD GetDispatchObject(void **dsp) = 0;
 };
@@ -258,13 +248,11 @@ public:
 
 //---------------------------------------------------------------------------
 // The exporter, completed
-//---------------------------------------------------------------------------
-// shim_abi.h forward-declares iTVPFunctionExporter without a body, on purpose:
-// the pointer crosses the boundary and nothing else about it belongs to a shim.
-// Completing it here is legitimate — the ABI is the engine's, and the only
-// member this file calls is the narrow-string query, which is what the engine's
-// own generated plugin stubs use (src/core/base/sdl2/makestub.py:689-690, 709).
-// Declaration order and convention must match PluginImpl.h:44-50.
+// shim_abi.h forward-declares iTVPFunctionExporter without a body. Completing
+// it here is legitimate: the only member this file calls is the narrow-string
+// query, which is what the engine's own plugin stubs use
+// (src/core/base/sdl2/makestub.py:689-690, 709). Declaration order and
+// convention must match PluginImpl.h:44-50.
 struct iTVPFunctionExporter
 {
 	virtual bool SHIM_INTF_METHOD QueryFunctions(const tjs_char **name,
@@ -274,14 +262,10 @@ struct iTVPFunctionExporter
 };
 
 //---------------------------------------------------------------------------
-// Engine pixel primitives, resolved by name
-//---------------------------------------------------------------------------
-// These are the engine's own portable pixel operations, not something this file
-// reimplements. Their export keys are the exact mangled strings from the
-// engine's function table (verified by decompressing `compressed_functable` in
-// src/core/base/sdl2/FuncStubs.cpp:2753); the original plugin looked its
-// functions up the same way, through tp_stub. Resolving by name is also what
-// keeps this shim portable: it names an operation, not a symbol in one build.
+// Engine pixel primitives, resolved by name. The export keys are the exact
+// mangled strings from the engine's function table (verified by decompressing
+// `compressed_functable` in FuncStubs.cpp:2753); resolving by name is what
+// keeps this shim portable.
 typedef void (SHIM_INTF_METHOD *tFillARGB)(tjs_uint32 *dest, tjs_int len,
 	tjs_uint32 value);
 typedef void (SHIM_INTF_METHOD *tConstAlphaBlendSD)(tjs_uint32 *dest,
@@ -7707,13 +7691,10 @@ static void ShimRemoveProviders()
 }
 
 //---------------------------------------------------------------------------
-// The plugin ABI
-//---------------------------------------------------------------------------
-// extern "C" is required in addition to SHIM_EXPORT, because this is a .cpp: the
-// built-in build reaches the entry points through names the registry declares
-// with C linkage (BuiltinShims.cpp: SHIM_LINK(extrans)), and C++ name mangling
-// would make those names not match. shim_abi.h renames V2Link per shim in that
-// build but does not itself apply C linkage. Nesting the two is legal.
+// The plugin ABI. extern "C" is required in addition to SHIM_EXPORT: the
+// built-in build reaches the entry points through C-linkage names the registry
+// declares (BuiltinShims.cpp: SHIM_LINK(extrans)), and C++ mangling would not
+// match. Nesting the two is legal.
 extern "C" {
 
 // Register all seven transitions the upstream plugin registers, in the same
@@ -7723,9 +7704,8 @@ extern "C" {
 // total: mosaic, wave, turn, ripple, rotatezoom, rotatevanish, rotateswap.
 SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)
 {
-	// Resolve everything this shim needs from the engine by name. This is what
-	// the original did too (tp_stub resolved each engine function through the
-	// same exporter), and it is what keeps the file buildable on both paths.
+	// Resolve everything this shim needs from the engine by name (keeps the
+	// file buildable on both paths).
 	g_fill_argb = (tFillARGB)ShimResolve(exporter,
 		"void ::TVPFillARGB(tjs_uint32 *,tjs_int,tjs_uint32)");
 	g_blend_sd = (tConstAlphaBlendSD)ShimResolve(exporter,

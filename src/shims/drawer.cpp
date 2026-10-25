@@ -1,88 +1,52 @@
 //---------------------------------------------------------------------------
 // shims/drawer.cpp — Fate/stay night's `drawer.dll`, replaced.
 //
-// What the plugin was
-// -------------------
-// `drawer.dll` is NOT stock KiriKiri: it is absent from the upstream tree (no
-// entry in bin/win32/plugin, no source under src/plugins) and ships with Fate.
-// It registers three global TJS functions and rasterises them straight into a
-// Layer's own pixel buffer:
+// Not stock KiriKiri (absent from the upstream tree); ships with Fate.
+// Registers three global TJS functions that rasterise into a Layer's own pixel
+// buffer, reached through its TJS properties (imageWidth, imageHeight,
+// mainImageBufferForWrite, mainImageBufferPitch):
 //
 //     drawLine(layer, x1, y1, x2, y2, color)              aliased line
 //     drawAALine(layer, x1, y1, x2, y2, color)            anti-aliased line
 //     drawAATriangle(layer, x1, y1, x2, y2, x3, y3, color) anti-aliased triangle
 //
-// The Layer is fetched through its own standard TJS properties
-// (`imageWidth`, `imageHeight`, `mainImageBufferForWrite`,
-// `mainImageBufferPitch`) — the same surface `clipboardEx`, `tftSave`,
-// `shrinkCopy` and others use — so the drawing happens inside the engine and no
-// host boundary is crossed. V2Unlink removes the three names again.
-//
 // One source, two consumers: see shim_abi.h. Built into the engine the three
-// names are reached through the override table's `@builtin:drawer`; built as a
-// PE it is the plugin the game links.
+// names are reached through `@builtin:drawer`; built as a PE it is the plugin
+// the game links.
 //
-// Recovered from the binary
-// -------------------------
-// The port is reconstructed from the shipped DLL, not from source. Functions
-// named below are Ghidra's, matched to addresses; every non-obvious line says
-// which one it comes from and what the arithmetic means.
+// Reconstructed from the shipped DLL (not from source). Ghidra function names
+// and addresses are cited where a non-obvious line derives from one:
 //
-//   FUN_10001000  read the Layer's surface: imageWidth / imageHeight /
-//                 mainImageBufferForWrite / mainImageBufferPitch, through
-//                 iTJSDispatch2::PropGet, raising
-//                 "invoking of Layer.<member> failed." when one is absent.
+//   FUN_10001000  read the Layer surface through PropGet
 //   FUN_10002c50  publish the surface to the module's clip globals
-//                 (pixels, pitch, width, height).
-//   FUN_10002b90  clip a segment to the clip rect. 0 = both ends already inside
-//                 (coordinates untouched), 1 = clipped in place, -1 = rejected;
-//                 the caller draws only when the result is >= 0.
-//   FUN_10002c90  aliased line: Bresenham, flat colour, no blending.
-//   FUN_10002e90  anti-aliased line: two complementary-coverage pixels a step.
-//   FUN_100022b0  anti-aliased *edge* used by the triangle: one pixel a step,
-//                 restricted to one side of the centre point it is given.
-//   FUN_10002840  anti-aliased triangle: initialise a per-row column-span
-//                 scratch, run the three edges towards the centroid, then fill
-//                 each row between the bounds the edges left.
+//   FUN_10002b90  clip a segment to the clip rect (0=inside, 1=clipped, -1=rejected)
+//   FUN_10002c90  aliased line: Bresenham, flat colour, no blending
+//   FUN_10002e90  anti-aliased line: two complementary-coverage pixels a step
+//   FUN_100022b0  anti-aliased edge for the triangle: one pixel a step
+//   FUN_10002840  anti-aliased triangle
 //
-// Pixel-surface contract
-// ----------------------
-// The surface is the Layer's own buffer, reached through the Layer's TJS
-// properties exactly as the original did. Nothing here crosses a host boundary,
-// so no host callback is involved. The assumptions, stated once, in the style
-// of `EngineSurface` (src/engine_cabi.h) and `VNovelTextPlane`
-// (src/engine_bridge.h):
+// Pixel-surface contract (stated once, in the style of EngineSurface and
+// VNovelTextPlane):
 //
-//   * the buffer is 32bpp ARGB: one little-endian word a pixel, bytes B,G,R,A,
-//     so 0x00RRGGBB with the alpha in bits 24-31. The original packs every
-//     blended pixel that way (0x1000246e: bits 16-23 from red, 8-15 from green,
-//     0-7 from blue, and `or ecx,0xffffff00` before the two shifts forces bits
-//     24-31 to 0xff), and the engine's own `GrayToColorFunctor`
-//     (visual/LayerBitmapIntf.h) packs 0xff000000 | r<<16 | g<<8 | b the same
-//     way;
-//   * rows are addressed by a BYTE pitch. `mainImageBufferPitch` maps to
+//   * 32bpp ARGB: one little-endian word a pixel (bytes B,G,R,A), 0x00RRGGBB
+//     with alpha in bits 24-31. The original packs blended pixels with
+//     `or ecx,0xffffff00` forcing bits 24-31 to 0xff (0x1000246e); the engine's
+//     own GrayToColorFunctor packs 0xff000000 | r<<16 | g<<8 | b the same way.
+//   * rows are addressed by a BYTE pitch. mainImageBufferPitch maps to
 //     Layer::GetMainImagePixelBufferPitch() -> GetPitchBytes()
-//     (visual/LayerIntf.cpp:2688), so the "Pixel" in the accessor name is
-//     misleading. Rows are padded: never assume width * 4, and never index by a
-//     word stride;
-//   * that pitch is SIGNED and reports a bottom-up bitmap, so `base` is the low
-//     end of the pixel data and the stride to the next visual row is its
-//     magnitude: GetPitchBytes() returns tTVPBitmap::GetPitch(), which is
-//     PitchStep = -PitchBytes (visual/LayerBitmapImpl.cpp:429), while
-//     `mainImageBufferForWrite` is GetScanLineForWrite(0), the visual row 0
-//     (LayerBitmapImpl.cpp:528 puts row l at (height - l - 1) * PitchBytes, so
-//     row 0 is the physically lowest row of a bottom-up DIB). Walking upward in
-//     memory therefore walks down the image, which is exactly the visual y
-//     direction, and every row lies at base + y * |pitch|. The shim keeps the
-//     magnitude for the stride and takes the direction from y, which is the same
-//     arithmetic the original gets by dividing the pitch by 4 with an arithmetic
-//     shift (0x100022dc: `sar eax,2`, preserving the sign) and multiplying it by
-//     the row;
-//   * every write is clipped to [0,width) x [0,height) against the dimensions
-//     the Layer itself reported. The original did NOT always do this — see the
-//     note on the triangle below, where an off-layer vertex walks its scratch
-//     off the end in the shipped DLL.
-//---------------------------------------------------------------------------
+//     (visual/LayerIntf.cpp:2688). Rows are padded: never assume width * 4.
+//   * that pitch is SIGNED and reports a bottom-up bitmap. GetScanLine(0) is
+//     the physically lowest row; image row y lives at
+//     (Height - y - 1) * PitchBytes + Bits (LayerBitmapImpl.cpp:528), so from
+//     the base pointer row y is at base + y * pitch with pitch as reported.
+//     Walking upward in memory walks down the image (the visual y direction).
+//     The sign carries no information beyond "this is a bottom-up DIB", which
+//     the base pointer already encodes.
+//   * every write is clipped to [0,width) x [0,height). The original did NOT
+//     always do this — see the triangle note, where an off-layer vertex walks
+//     its scratch off the end in the shipped DLL.
+
+// One source, two consumers: see shim_abi.h.
 
 // The shim's registry name. shim_abi.h turns this into the per-shim entry point
 // symbols when built into the engine; see that header for why.
@@ -97,19 +61,12 @@
 namespace {
 
 //---------------------------------------------------------------------------
-// TJS error codes used below. Values from tjsErrorDefs.h, named here only so
-// the returns read as what the original returned.
-//---------------------------------------------------------------------------
+// TJS error codes (values from tjsErrorDefs.h).
 const tjs_error kESucceed = TJS_S_OK;      // 0
 const tjs_error kEBadParamCount = -1004;   // TJS_E_BADPARAMCOUNT (0xfffffc14)
 
 //---------------------------------------------------------------------------
-// Property and function names.
-//
-// Constructed once for the process: a function-local static is initialised
-// exactly once even if TJS ever runs these from more than one thread, and the
-// strings would otherwise be rebuilt on every call.
-//---------------------------------------------------------------------------
+// Property and function names, constructed once (function-local static).
 struct Keys {
 	ttstr imageWidth, imageHeight, mainImageBufferForWrite, mainImageBufferPitch;
 	ttstr drawLine, drawAALine, drawAATriangle;
@@ -133,22 +90,11 @@ inline Keys &K()
 }
 
 //---------------------------------------------------------------------------
-// The layer surface, as fetched from the Layer.
-//
-// `base` is the address of visual row 0 and `pitchBytes` is the engine's own
-// SIGNED byte stride (negative on this engine's bottom-up bitmap; see
-// BindSurface for why the sign is the row direction, not a detail to normalise
-// away); it is a byte
-// stride, so the two together are the whole contract: the addresses of every
-// row follow from them, and nothing else about the engine's bitmap layout is
-// assumed. `Row()` below is the only place that turns (x, y) into an address.
-//
-// Positive-byte indexing is what the engine expects, per the pixel-surface
-// contract at the top of the file: GetScanLineForWrite(0) is the low end of a
-// bottom-up bitmap, and the magnitude of the pitch is the distance to the next
-// row from there. The sign the engine reports therefore carries no information
-// beyond "this is a bottom-up DIB", which the base pointer already encodes.
-//---------------------------------------------------------------------------
+// The layer surface: `base` is the address of visual row 0, `pitchBytes` is
+// the engine's SIGNED byte stride (the sign is the row direction — see the
+// pixel-surface contract at the top of the file). The two together are the
+// whole contract; nothing else about the bitmap layout is assumed. Row() is
+// the only place that turns (x, y) into an address.
 struct Surface {
 	tjs_uint8 *base;
 	tjs_int width;
@@ -167,16 +113,10 @@ struct Surface {
 
 //---------------------------------------------------------------------------
 // Fetch the surface through the Layer's own properties (FUN_10001000).
-//
-// Returns false when the argument is not an object, when any of the four
-// properties is missing, when the buffer pointer is null, or when the geometry
-// is not usable. The original raised
-// "invoking of Layer.<member> failed." through TVPThrowExceptionMessage on a
-// missing member; here the shim declines to draw instead, so a script that
-// passes something that is not a Layer gets an undefined drawing rather than a
-// thrown exception out of a rendering helper. A property that exists but holds
-// nonsense (a null buffer, a pitch too small for a row) is likewise declined.
-//---------------------------------------------------------------------------
+// Returns false on a non-object, a missing property, a null buffer, or unusable
+// geometry. The original raised "invoking of Layer.<member> failed." on a
+// missing member; here the shim declines to draw instead, so a non-Layer gets
+// an undefined drawing rather than a thrown exception.
 bool BindSurface(Surface &s, iTJSDispatch2 *layer)
 {
 	if (!layer) return false;
@@ -217,23 +157,11 @@ bool BindSurface(Surface &s, iTJSDispatch2 *layer)
 	const tjs_int absPitch = pitch < 0 ? -pitch : pitch;
 	if (absPitch < width * 4) return false;
 
-	// The stride KEEPS ITS SIGN, and that sign is the row direction.
-	//
-	// The first version of this kept only the magnitude, on the theory that
-	// GetScanLine(0) is the physically lowest row and every row lies above it.
-	// That is wrong, and measurably so: an 800x600 Layer reports pitch -3200,
-	// and image row y lives at
-	//     (Height - y - 1) * PitchBytes + Bits     (tTVPBitmap::GetScanLine,
-	//                                               LayerBitmapImpl.cpp:528)
-	// so from GetScanLine(0) the next image row is at a LOWER address by
-	// PitchBytes. Walking +|pitch| sent every row the wrong way - for row 0 the
-	// write landed outside the image altogether - and the observable effect was
-	// a call that returned success and drew nothing: a probe Layer filled white
-	// came back byte-for-byte white after all three primitives had run.
-	//
-	// So the address is base + y * pitch, with pitch as reported. That is also
-	// what the shipped plugin did: it folded the sign into its row offsets
-	// rather than inverting them (FUN_10002840, 0x10002dd9).
+	// The stride keeps its sign: image row y lives at base + y * pitch with
+	// pitch as reported (an 800x600 Layer reports -3200). Taking only the
+	// magnitude writes every row the wrong way and is silent — the call
+	// returns success and draws nothing. The shipped plugin folded the sign
+	// into its row offsets the same way (FUN_10002840, 0x10002dd9).
 	s.pitchBytes = pitch;
 	s.base = base;
 	s.width = width;
@@ -242,12 +170,8 @@ bool BindSurface(Surface &s, iTJSDispatch2 *layer)
 }
 
 //---------------------------------------------------------------------------
-// One-to-one helpers for the two things every writer does: decide whether a
-// pixel is on the Layer, and write to it.
-//
-// Every write in this file goes through PutPixel or BlendPixel, which is what
-// makes the clipping claim at the top of the file true rather than aspirational.
-//---------------------------------------------------------------------------
+// Bounds check and write. Every write goes through PutPixel or BlendPixel,
+// which is what makes the clipping claim at the top of the file true.
 inline bool InBounds(const Surface &s, tjs_int x, tjs_int y)
 {
 	return x >= 0 && y >= 0 && x < s.width && y < s.height;
@@ -306,11 +230,8 @@ inline tjs_int Fix16Frac(tjs_int64 v)          // v's low 16 bits
 // destination to source, which is exactly the coverage weight of an
 // anti-aliased cell.
 //
-// This is implemented directly rather than through an engine primitive: the
-// blend is five instructions wide, self-contained, and the arithmetic is what
-// the binary does, so routing it through any engine composite would have to
-// reproduce this expression anyway (and the engine's compositors take a
-// bitmap/rect pair, not a per-pixel weight).
+// Implemented directly: the engine's compositors take a bitmap/rect pair, not
+// a per-pixel weight.
 //
 // Alpha is forced opaque: the decompiled expression ORs 0xffffff00 into the red
 // channel before the two left shifts that assemble the word (0x1000243c), which
@@ -362,11 +283,10 @@ inline void BlendPixel(const Surface &s, tjs_int x, tjs_int y, tjs_uint32 color,
 //     keeping the endpoint only if the crossing lands within the rect, else -1.
 //
 // Reproduced in that shape rather than as a clamp on the writes, because the
-// anti-aliased line computes its weights from the clipped endpoints: re-anchoring
-// them (as the original does) changes the sub-pixel phase, and therefore the
-// exact coverage, of every pixel of a line that pokes outside the Layer.
-// The writes are clipped as well — belt and braces — so a Layer that lies about
-// its size cannot be written outside it.
+// anti-aliased line computes its weights from the clipped endpoints:
+// re-anchoring them changes the sub-pixel phase, and therefore the exact
+// coverage, of every pixel of a line that pokes outside the Layer. Writes are
+// clipped as well.
 //
 // Divergence worth naming: the original's crossing arithmetic is 32-bit and
 // truncating, and it divides by (x2 - x1) / (y2 - y1) unguarded. The
@@ -447,16 +367,12 @@ bool ClipSegment(const Surface &s, tjs_int &x1, tjs_int &y1, tjs_int &x2, tjs_in
 // no alpha work at all — the word the script passed is stored as-is
 // (0x10002d45, and the same in the second half of the function).
 //
-// The original walks from both endpoints towards the middle — two pixels a
-// iteration — and then draws the odd leftover pixel after the loop, which is
-// the `(major + 1) % 2` test at 0x10002d9b (`and edx,0x80000001` and the
-// following fix-up of the remainder). The union of the two half-walks is the
-// same pixel set as the single forward walk below, and the error term is
-// literally the original's — initialised to -major and closed by 2*minor each
-// step, re-opened by -2*major on a minor step (0x10002d01: `neg esi`, then
-// `iVar11 += iVar8 * 2` / `iVar11 += iVar4 * -2`). That the union equals the
-// forward walk is reconstruction, not something the disassembly states; the
-// error term and the step direction are read straight off it.
+// The original walks from both endpoints towards the middle — two pixels an
+// iteration — then draws the odd leftover pixel (the `(major + 1) % 2` test
+// at 0x10002d9b). The union of the two half-walks is the same pixel set as
+// the single forward walk below. The error term is the original's:
+// initialised to -major, closed by 2*minor each step, re-opened by -2*major
+// on a minor step (0x10002d01).
 //---------------------------------------------------------------------------
 void RasterAliasedLine(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int y2, tjs_uint32 color)
 {
@@ -524,15 +440,12 @@ void RasterAliasedLine(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs
 // slope in 16.16 obtained with a signed divide (0x10002f03: `idiv`) truncated
 // towards zero.
 //
-// Two details taken from the code, not invented:
-//   * the loop runs |major| times, not |major| + 1, so unlike the aliased line
-//     the AA line does not paint the far endpoint (0x10002f21: the count is the
-//     major delta). A degenerate segment (both deltas 0) is forced to one step
-//     (0x10002efb, 0x10002f75: `if (count == 0) count = 1`) so a zero-length
-//     line still plots its single covered cell;
-//   * the step arithmetic is 64-bit here where the original is 32-bit, so a
-//     coordinate beyond +-32767 cannot overflow the 16.16 fixed point. Within a
-//     screen-sized Layer the values are identical.
+// The loop runs |major| times, not |major| + 1, so the AA line does not paint
+// the far endpoint (0x10002f21). A degenerate segment is forced to one step
+// (0x10002efb) so a zero-length line still plots its single covered cell. The
+// step arithmetic is 64-bit here where the original is 32-bit, so a coordinate
+// beyond +-32767 cannot overflow the 16.16 fixed point; within a screen-sized
+// Layer the values are identical.
 //---------------------------------------------------------------------------
 void RasterAALine(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int y2, tjs_uint32 color)
 {
@@ -609,11 +522,8 @@ void RasterAALine(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int 
 // y or y+1 — the row the edge did not paint. Both are clipped by Rec::Col, so an
 // edge that strays outside the Layer cannot record out of range.
 //
-// Read off the loops after working out that the predicate is loop-invariant:
-// MSVC emitted it as two separate loops per arm, which reads like a per-step
-// test until the predicate is seen to depend only on the call's arguments.
-// Stated because it is the one place the decompilation is easy to misread; the
-// hoisting is inferred, the predicate expression is not.
+// The side-selection predicate is loop-invariant (depends only on the call's
+// arguments); MSVC emitted it as two separate loops per arm.
 //---------------------------------------------------------------------------
 void RasterAAEdge(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int y2,
 	tjs_int cx, tjs_int cy, tjs_uint32 color, tjs_int *spanMin, tjs_int *spanMax)
@@ -740,26 +650,19 @@ void RasterAAEdge(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int 
 //      the pitch and clipping the bounds to [0, width-1] (0x100029ab clamps the
 //      low bound up, 0x100029b5 the high one down).
 //
-// Reconstructed where the evidence runs out, and named as such:
+// Divergences from the original:
 //   * the scratch is seeded strictly empty here (min = width, max = -1) rather
-//     than width-1 / 0. The original's seeds are equivalent for every column in
-//     [0, width-1] except the last one: a triangle touching the right edge would
-//     leave the last column's minimum at width-1 and lose that column's fill.
-//     No correct triangle is affected by seeding strictly;
+//     than width-1 / 0. The original's seeds are equivalent for every column
+//     in [0, width-1] except the last one: a triangle touching the right edge
+//     would leave the last column's minimum at width-1 and lose that column's
+//     fill. No correct triangle is affected by seeding strictly.
 //   * the row band is clipped to the Layer before anything is written. The
 //     original does not clip it, so a vertex outside the Layer makes its
-//     scratch seeding start outside the array. That is undefined behaviour in
-//     the shipped DLL; it is not reproduced.
+//     scratch seeding start outside the array — undefined behaviour in the
+//     shipped DLL, not reproduced here.
 //
-// The scratch is two arrays of one int a row, size four bytes times one of the
-// four surface numbers the original had just fetched (0x10001a56 / 0x10001a62
-// allocate both from the same product), and the fill loop indexes them by row.
-// This port sizes them by the Layer's height, because a row index is what they
-// are indexed with. Which number the original multiplied is not something the
-// disassembly makes readable at a glance, and it does not change the result for
-// a Layer at least as tall as it is wide, which every Layer a game draws into
-// is; sizing by height is the choice that stays in range for the indexing the
-// code actually performs.
+// The scratch is two arrays of one int a row; the fill loop indexes them by
+// row, so this port sizes them by the Layer's height.
 //---------------------------------------------------------------------------
 bool RasterAATriangle(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_int y2,
 	tjs_int x3, tjs_int y3, tjs_uint32 color)
@@ -832,10 +735,9 @@ bool RasterAATriangle(const Surface &s, tjs_int x1, tjs_int y1, tjs_int x2, tjs_
 // undefined on a short call. Requiring the full count is stricter and cannot
 // reject a correct caller.
 //
-// A Layer that does not answer the four surface properties makes the function
-// return without drawing (the original raised — see BindSurface). Nothing here
-// returns an exception to TJS for a drawing failure: the scripts call these for
-// their effect, and the effect of a missing surface is "nothing drawn".
+// A Layer that does not answer the four surface properties returns without
+// drawing (see BindSurface). Drawing failures do not throw: the scripts call
+// these for their effect, and the effect of a missing surface is "nothing drawn".
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD DrawLineFunc(tTJSVariant * /*result*/, tjs_int numparams,
 	tTJSVariant **param, iTJSDispatch2 * /*objthis*/)
@@ -910,21 +812,11 @@ tjs_error TJS_INTF_METHOD DrawAATriangleFunc(tTJSVariant * /*result*/, tjs_int n
 } // namespace
 
 //---------------------------------------------------------------------------
-// V2Link / V2Unlink — the plugin ABI (shim_abi.h).
-//
-// The three names are registered through the engine's own helpers, which take
-// and drop the global dispatch reference correctly; unregistration uses the
-// matching remover, so the pair is symmetric and the engine may link, unlink and
-// link another shim in one run. The original used its own iTJSDispatch2-derived
-// function objects and the global dispatch directly; the engine's helpers are
-// the same registration with the reference counting already right.
-//
-// extern "C" is stated explicitly. shim_abi.h renames the entry points per shim
-// only in the built-in build, and in that build SHIM_EXPORT is empty, so without
-// this the symbols would be C++-mangled and would not match BuiltinShims.cpp's
-// `extern "C" int shim_drawer_V2Link(...)`. On the plugin path SHIM_EXPORT
-// already carries extern "C"; nesting is legal and redundant.
-//---------------------------------------------------------------------------
+// V2Link / V2Unlink — the plugin ABI (shim_abi.h). Registration is symmetric
+// (V2Unlink removes what V2Link added). extern "C" is stated explicitly: in the
+// built-in build SHIM_EXPORT is empty, so without it the symbols would be
+// C++-mangled and would not match BuiltinShims.cpp's
+// `extern "C" int shim_drawer_V2Link(...)`.
 extern "C" {
 
 SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)

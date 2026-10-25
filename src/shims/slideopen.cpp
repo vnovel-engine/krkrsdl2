@@ -1,12 +1,9 @@
 //---------------------------------------------------------------------------
 // shims/slideopen.cpp — Fate/stay night's `slideopen.dll`, replaced.
 //
-// What the plugin was
-// -------------------
-// `slideopen.dll` is NOT stock KiriKiri: it is absent from the upstream tree
-// and ships with Fate. It registers three global TJS functions that drive a
-// "slide open / slide close" panel transition directly between two Layer
-// pixel buffers:
+// Not stock KiriKiri (absent from the upstream tree); ships with Fate.
+// Registers three global TJS functions that drive a "slide open / slide close"
+// panel transition directly between two Layer pixel buffers:
 //
 //     initSlideOpen(obj)     obj is the SlideOpenPlugin TJS object; reads its
 //                            dest, src, type, count, time, accel, open members
@@ -16,49 +13,37 @@
 //     finishSlideOpen()      draw the final state and release state.
 //
 // The plugin's own natives were reached through vtables at 0x10001c70
-// (init), 0x100020c0 (draw), 0x100023f0 (finish); the geometry below is
-// recovered from disassembling those three, plus the four raster primitives
-// they dispatch to (FUN_10001000 / 100011b0 / 100013d0 / 100016c0).
+// (init), 0x100020c0 (draw), 0x100023f0 (finish); the geometry is recovered
+// from disassembling those three, plus the four raster primitives they
+// dispatch to (FUN_10001000 / 100011b0 / 100013d0 / 100016c0).
 //
 // One source, two consumers: see shim_abi.h. Built into the engine the three
-// names are reached through the override table's `@builtin:slideopen`; built
-// as a PE it is the plugin the game links.
+// names are reached through `@builtin:slideopen`; built as a PE it is the
+// plugin the game links.
 //
-// State contract (BuiltinShims.h)
-// -------------------------------
-// Everything the effect owns — the cached Layer geometry, the snapshot buffer,
-// the option values — lives in this translation unit as a single struct owned
-// by this file. No engine global is assigned. What is registered with the
-// engine is unregistered by V2Unlink, through the engine's own helpers.
+// State contract (BuiltinShims.h): everything the effect owns lives in this
+// translation unit as a single struct. No engine global is assigned. What is
+// registered is unregistered by V2Unlink.
 //
-// Pixel-surface contract
-// ----------------------
-// The surface is the Layer's own buffer, reached through the Layer's TJS
-// properties exactly as the original did (`mainImageBufferForWrite`,
-// `mainImageBufferPitch`, `imageWidth`, `imageHeight`). The same conventions
-// documented in shims/drawer.cpp hold here:
-//
-//   * the buffer is 32bpp ARGB: one little-endian word a pixel;
-//   * rows are addressed by a SIGNED BYTE pitch — `mainImageBufferPitch` maps
-//     to Layer::GetPitchBytes() (visual/LayerIntf.cpp:2688). The sign IS the
-//     row direction: GetScanLineForWrite(0) is the physically lowest row of a
+// Pixel-surface contract (see drawer.cpp for the full derivation):
+//   * 32bpp ARGB: one little-endian word a pixel.
+//   * rows are addressed by a SIGNED BYTE pitch — mainImageBufferPitch maps to
+//     Layer::GetPitchBytes() (visual/LayerIntf.cpp:2688). The sign IS the row
+//     direction: GetScanLineForWrite(0) is the physically lowest row of a
 //     bottom-up DIB, so image row y lives at base + y*pitch with the pitch as
-//     reported. Keeping the sign is what makes row addressing correct;
-//   * rows are padded: never assume width * 4, never index by a word stride.
+//     reported. Keeping the sign is what makes row addressing correct.
+//   * rows are padded: never assume width * 4.
 //
 // Recovered geometry
-// ------------------
 // drawSlideOpen (0x100020c0) computes a displacement and dispatches on `type`
 // through a jump table at 0x10002310:
 //
 //   off  = (tjs_int)(W/2 * per + 0.5)              (0x1000215a..0x10002176)
-//          When `open` is false, per is inverted first:
-//          per = 1.0 - per                          (0x10002154: fsubr 1.0)
+//          When `open` is false, per is inverted first: per = 1.0 - per.
 //   off2 = (tjs_int)(off * 1.75)                   (0x100021a2/0x100021bb,
 //                                                    used only for types 2/3)
-//          The constant at 0x1000a240 is 1.75. The code below multiplies by
-//          2.0 instead, so the diagonal split travels further than the
-//          original's; see CHANGELOG "Known issues in the shims".
+//          The constant at 0x1000a240 is 1.75. This port multiplies by 2.0
+//          instead, so the diagonal split travels further; see CHANGELOG.
 //
 //   type 0 -> FUN_10001000(off,  W, H)   horizontal split
 //   type 1 -> FUN_100011b0(off,  W, H)   vertical split
@@ -67,11 +52,9 @@
 //   default -> nothing
 //
 // Each primitive has two branches selected by DAT_1000e2e4, which init sets
-// from the `open` member (0x10001d4a..0x10001d9b: PropGet "open", operator
-// tjs_int, store). open==true takes the "slide apart" branch; open==false
-// takes the "slide together" branch. The two are the same geometry with the
-// roles of "the sliding image" and "the revealed image" exchanged, so both
-// are expressed below as one compositing pass parameterised by direction.
+// from the `open` member. open==true takes the "slide apart" branch; open==false
+// takes the "slide together" branch. Both are the same geometry with the roles
+// of "the sliding image" and "the revealed image" exchanged.
 //
 // The sliding image is a SNAPSHOT of dest taken at init (the malloc'd work
 // buffer at 0x10001ed5..0x10001f72, DAT_1000e2f4). The revealed image is src
@@ -85,10 +68,8 @@
 // initSlideOpen once per panel step and drawSlideOpen with an already
 // accel-eased, per-panel progress. The native only needs dest, src, type,
 // and open.
-//---------------------------------------------------------------------------
 
-// The shim's registry name. shim_abi.h turns this into the per-shim entry
-// point symbols when built into the engine; see that header for why.
+// Registry name (see shim_abi.h).
 #define SHIM_NAME slideopen
 #include "shim_abi.h"
 
@@ -101,20 +82,13 @@
 namespace {
 
 //---------------------------------------------------------------------------
-// TJS error codes used below. Values from tjsErrorDefs.h, named here only so
-// the returns read as what the original returned.
-//---------------------------------------------------------------------------
+// TJS error codes (values from tjsErrorDefs.h).
 const tjs_error kESucceed = TJS_S_OK;      // 0
 const tjs_error kEBadParamCount = -1004;   // TJS_E_BADPARAMCOUNT (0xfffffc14)
 const tjs_error kEMemberNotFound = -1001;  // TJS_E_MEMBERNOTFOUND (0xfffffc17)
 
 //---------------------------------------------------------------------------
-// Property, member, and exported-function names.
-//
-// Constructed once for the process: a function-local static is initialised
-// exactly once even if TJS ever runs these from more than one thread, and the
-// strings would otherwise be rebuilt on every call.
-//---------------------------------------------------------------------------
+// Property, member, and function names, constructed once (function-local static).
 struct Keys {
 	ttstr initSlideOpen, drawSlideOpen, finishSlideOpen;
 
@@ -846,20 +820,10 @@ tjs_error TJS_INTF_METHOD FinishSlideOpen(tTJSVariant * /*result*/, tjs_int /*nu
 } // namespace
 
 //---------------------------------------------------------------------------
-// V2Link / V2Unlink — the plugin ABI (shim_abi.h).
-//
-// The three names are registered through the engine's own helpers, which take
-// and drop the global dispatch reference correctly; unregistration uses the
-// matching remover, so the pair is symmetric and the engine may link,
-// unlink and link another shim in one run.
-//
-// extern "C" is stated explicitly. shim_abi.h renames the entry points per
-// shim only in the built-in build, and in that build SHIM_EXPORT is empty, so
-// without this the symbols would be C++-mangled and would not match
-// BuiltinShims.cpp's `extern "C" int shim_slideopen_V2Link(...)`. On the
-// plugin path SHIM_EXPORT already carries extern "C"; nesting is legal and
-// redundant.
-//---------------------------------------------------------------------------
+// V2Link / V2Unlink — the plugin ABI (shim_abi.h). Registration is symmetric.
+// extern "C" is stated explicitly: in the built-in build SHIM_EXPORT is empty,
+// so without it the symbols would be C++-mangled and would not match
+// BuiltinShims.cpp's `extern "C" int shim_slideopen_V2Link(...)`.
 extern "C" {
 
 SHIM_EXPORT SHIM_HIDDEN int V2Link(iTVPFunctionExporter *exporter)
@@ -900,8 +864,7 @@ SHIM_EXPORT SHIM_HIDDEN int V2Unlink(void)
 	TVPRemoveGlobalObject(k.finishSlideOpen.c_str());
 
 	// Anything still live goes with the shim: the engine may unload a plugin
-	// without the game having called finishSlideOpen (the original's V2Unlink
-	// freed the work buffer the same way, at 0x10002400..0x1000241e).
+	// without finishSlideOpen having been called (0x10002400..0x1000241e).
 	g_state.Release();
 	return SHIM_TJS_S_OK;
 }

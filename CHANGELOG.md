@@ -16,7 +16,31 @@ engine. `external/krkrz` and `external/FAudio` are forks in their own right;
 see their `LINEAGE.md`.
 
 
-## Unreleased
+## 2026-10-25 — one debug word, and the Windows build
+
+### Diagnostics
+
+- The ad-hoc probes are folded into the shared 64-bit debug mask the core owns,
+  of which this engine reads the KiriKiri slice (bits 24-39). The shift and
+  width live in `DebugFlags.h` as this fork's local copy of that layout: the
+  engine builds standalone from its own checkout and cannot include the core's
+  header, so the constants are duplicated deliberately and must match
+  `src/vnovel_debug.h`.
+
+### Fixed
+
+- **The shims compile on Windows.** `extrans.cpp` restates the TJS ABI types
+  locally (a shim must build without engine headers) but omitted the narrow
+  integers its ripple tables are built on, and it is the only shim that includes
+  no header supplying them. Linux's precompiled header covered the gap; the
+  Windows build disables that header, so the file did not compile.
+- **`drawer`'s shim prelude is restored.** `SHIM_NAME` and the `shim_abi.h`
+  include had been dropped, leaving `SHIM_EXPORT` undefined and `V2Link`/
+  `V2Unlink` without their C linkage.
+- `krkrz` takes the `CharacterSet.h` include fix, so the UTF-16 <-> UTF-8
+  declarations are visible on Windows too.
+
+## 2026-10-24 — visual-effect shims and text-stream fixes
 
 ### Visual-effects shims: `filter`, `slideopen`, and the three missing `extrans` handlers
 

@@ -19,6 +19,7 @@
 #include "FontRasterizer.h"
 #include "EventIntf.h"
 #include "DebugIntf.h"
+#include "DebugFlags.h"
 #include "tjsArray.h"
 #include "StorageIntf.h"
 #include "SDLBitmapCompletion.h"
@@ -45,12 +46,11 @@
 #endif
 
 /* Portable sub-frame sleep, in milliseconds (may be fractional). nanosleep
- * exists on mingw but is quantized to the ~15.6 ms Windows timer tick: a 1 ms
- * wait actually blocks ~15.7 ms (measured), so the frame limiter overshoots
- * most of a 60 fps frame every iteration and the audio producer stutters.
- * SDL_Delay is the portable primitive — it uses the Win32 waitable timer on
- * Windows (sub-millisecond when the process timer resolution is raised) and
- * nanosleep elsewhere — and SDL is already linked. */
+ * on mingw is quantized to the ~15.6 ms Windows timer tick: a 1 ms wait blocks
+ * ~15.7 ms, so the frame limiter overshoots most of a 60 fps frame and the
+ * audio stutters. SDL_Delay uses the Win32 waitable timer on Windows
+ * (sub-millisecond when the process timer resolution is raised) and nanosleep
+ * elsewhere; SDL is already linked. */
 static void krkr_sleep_ms(double ms)
 {
 	if (ms <= 0.0) return;
@@ -3616,20 +3616,12 @@ static bool process_events()
 					&v);
 				accepted = ((int)v == 1);
 
-				/* DIAGNOSTIC (KRKR_SELECT_DEBUG=1): a refusal code says WHICH
-				 * guard declined - 0 no kag at all, -3 the current layer has
-				 * no links yet (the typewriter has not built the set), -4 the
-				 * ordinal is outside it. "no such choice" alone cannot tell
-				 * those apart and they have different fixes. Silent by
-				 * default: this is a hot path in a shipping core. */
-				{
-					static int dbg = -1;
-					if (dbg < 0)
-						dbg = getenv("KRKR_SELECT_DEBUG") ? 1 : 0;
-					if (dbg && !accepted)
-						fprintf(stderr, "krkr select: ordinal=%d refused=%d\n",
-						        ordinal, (int)v);
-				}
+				/* A refusal code says which guard declined: 0 no kag, -3 the
+				 * current layer has no links yet, -4 the ordinal is outside it.
+				 * Gated on the `select` debug bit (alias KRKR_SELECT_DEBUG). */
+				if (krkrsdl2_debug_on(KRKRSDL2_DBG_SELECT) && !accepted)
+					fprintf(stderr, "krkr select: ordinal=%d refused=%d\n",
+					        ordinal, (int)v);
 
 				/* Clear the temporary so it does not outlive the request. */
 				iTJSDispatch2 *g2 = TVPGetScriptDispatch();
