@@ -132,7 +132,7 @@ extern "C" volatile int krkrsdl2_pending_select = 0;
  * at file scope: the engine compiles without the shell's headers, and the
  * symbol resolves at the core's final link exactly as vnovel_publish_text_run
  * does — see the shim's own declaration in
- * src/shims/textstream.cpp. It cannot be declared locally in process_events():
+ * src/shims/textstream_shim.cpp. It cannot be declared locally in process_events():
  * `extern "C"` is a linkage specification, so it may only appear at namespace
  * scope (measured: "expected unqualified-id before string constant"). */
 extern "C" void vnovel_publish_nav_result(int ordinal, int accepted);

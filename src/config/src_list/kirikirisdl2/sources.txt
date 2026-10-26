@@ -420,7 +420,7 @@ src/shims/extrans.cpp
 src/shims/firespark.cpp
 src/shims/filter.cpp
 src/shims/slideopen.cpp
-src/shims/textstream.cpp
+src/shims/textstream_shim.cpp
 src/core/sdl2/FontDiscovery.cpp
 src/core/base/sdl2/EventImpl.cpp
 src/core/base/sdl2/FileSelector.cpp

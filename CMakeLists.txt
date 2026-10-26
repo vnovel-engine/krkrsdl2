@@ -82,7 +82,7 @@ endif()
 
 # The development wire protocol (the text stream out, navigation intents in).
 # The shim that publishes the flow/edge records must agree with the core: with
-# this OFF its publish calls are local no-ops (src/shims/textstream.cpp), so a
+# this OFF its publish calls are local no-ops (src/shims/textstream_shim.cpp), so a
 # build that defines it for the core and not here would listen on the socket and
 # never emit anything. The core's Makefile passes -DVNOVEL_DEVWIRE when it builds
 # with DEVWIRE=1, which CMake takes as this cache variable.

@@ -421,7 +421,7 @@ void TVPInstallBuiltinPlugins(void)
 {
 	TVPSetXP3ArchiveExtractionFilter(&BuiltinXP3Filter);
 
-	/* The core's own text channel (src/shims/textstream.cpp): the globals a
+	/* The core's own text channel (src/shims/textstream_shim.cpp): the globals a
 	 * look-ahead parser calls to hand parsed text to the shell.
 	 *
 	 * Installed HERE, at start-up, rather than through overrides.txt — and that
