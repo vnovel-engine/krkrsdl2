@@ -1,6 +1,6 @@
 [submodule "external/krkrz"]
 	path = external/krkrz
-	url = https://github.com/vnovel-engine/krkrz.git
+	url = ../krkrz.git
 	branch = krkrsdl2
 [submodule "external/simde"]
 	path = external/simde
@@ -10,10 +10,10 @@
 	url = https://github.com/krkrsdl2/meson_toolchains.git
 [submodule "SDL-upstream"]
 	path = external/SDL
-	url = https://github.com/vnovel-engine/SDL.git
+	url = ../SDL.git
 [submodule "external/zlib"]
 	path = external/zlib
 	url = https://github.com/madler/zlib.git
 [submodule "external/FAudio"]
 	path = external/FAudio
-	url = https://github.com/vnovel-engine/FAudio.git
+	url = ../FAudio.git
